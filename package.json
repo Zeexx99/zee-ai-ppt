@@ -1,0 +1,42 @@
+{
+  "name": "zee-ai-ppt",
+  "version": "1.0.0",
+  "description": "Zee AI for PowerPoint - Taskpane Add-in",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && node scripts/make-manifest.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "validate": "office-addin-manifest validate manifest.xml",
+    "validate:prod": "office-addin-manifest validate manifest.prod.xml"
+  },
+  "keywords": [
+    "office-addin",
+    "powerpoint",
+    "gemini",
+    "ai",
+    "zee-ai"
+  ],
+  "author": "Zeexx99",
+  "license": "MIT",
+  "dependencies": {
+    "@fluentui/react-components": "^9.74.9",
+    "@fluentui/react-icons": "^2.0.344",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/office-js": "^1.0.611",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "happy-dom": "^21.0.1",
+    "office-addin-manifest": "^3.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
+  }
+}

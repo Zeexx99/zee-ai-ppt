@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Zee AI - Google Sign In</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; text-align: center; }
+    .loader { margin: 40px auto; border: 4px solid #f3f3f3; border-top: 4px solid #D24726; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="loader"></div>
+  <p>Connecting to Google sign-in...</p>
+  <script>
+    Office.onReady(function () {
+      const urlParams = new URLSearchParams(window.location.search);
+      const clientId = urlParams.get('client_id');
+      if (!clientId) {
+        document.body.innerHTML = '<p style="color:red;">Google Client ID is missing. Please enter it in Zee AI Settings.</p>';
+        return;
+      }
+      // Build relative redirect URI
+      const redirectUri = new URL('callback.html', window.location.href).toString();
+      const scope = encodeURIComponent('openid profile email');
+      const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' +
+        'client_id=' + encodeURIComponent(clientId) +
+        '&redirect_uri=' + encodeURIComponent(redirectUri) +
+        '&response_type=token' +
+        '&scope=' + scope +
+        '&prompt=select_account';
+      window.location.href = authUrl;
+    });
+  </script>
+</body>
+</html>

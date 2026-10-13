@@ -1,0 +1,11 @@
+# Logs and local files
+node_modules/
+dist/
+dist-ssr/
+*.local
+update-log.txt
+backup-*/
+.DS_Store
+Thumbs.db
+.vite/
+*.log
