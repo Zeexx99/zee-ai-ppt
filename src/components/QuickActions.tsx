@@ -24,6 +24,8 @@ interface QuickActionsProps {
   onOpenTextFitFixer: () => void;
   onOpenDeckReviewer: () => void;
   onOpenBeautifier: () => void;
+  onOpenDiagrams: () => void;
+  onOpenAgendaBuilder: () => void;
 }
 
 export const QuickActions: React.FC<QuickActionsProps> = ({
@@ -37,6 +39,8 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
   onOpenTextFitFixer,
   onOpenDeckReviewer,
   onOpenBeautifier,
+  onOpenDiagrams,
+  onOpenAgendaBuilder,
 }) => {
   // Hide features that require unsupported PowerPointApi requirement sets instead of failing
   const canCreateSlides = !requirements.isPowerPointHost || requirements.pptApi1_1;
@@ -206,6 +210,40 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
               style={{ fontSize: 11, padding: "2px 7px" }}
             >
               🎨 Beautify
+            </Button>
+          </Tooltip>
+        )}
+
+        {canCreateSlides && (
+          <Tooltip
+            content="AI Engineering Diagram & Timeline Generator: Wellbore Schematics, Surface Flowcharts & Workover Timelines"
+            relationship="description"
+          >
+            <Button
+              size="small"
+              appearance="secondary"
+              disabled={disabled}
+              onClick={onOpenDiagrams}
+              style={{ fontSize: 11, padding: "2px 7px" }}
+            >
+              🛠️ Diagrams
+            </Button>
+          </Tooltip>
+        )}
+
+        {canCreateSlides && (
+          <Tooltip
+            content="Executive Agenda, Section Dividers & Action-Tracker Matrix Builder"
+            relationship="description"
+          >
+            <Button
+              size="small"
+              appearance="secondary"
+              disabled={disabled}
+              onClick={onOpenAgendaBuilder}
+              style={{ fontSize: 11, padding: "2px 7px" }}
+            >
+              📑 Agenda / Actions
             </Button>
           </Tooltip>
         )}

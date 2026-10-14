@@ -18,9 +18,11 @@ import {
 import { Dismiss20Regular } from "@fluentui/react-icons";
 import { ChatAttachment, SlideUndoSnapshot } from "../types/chat";
 import {
+  AgendaAndActionsPlan,
   ConsistencyIssue,
   DeckOutlinePlan,
   DeckReviewReport,
+  EngineeringDiagramKind,
   SlideBeautifyStyle,
   TextFitIssue,
 } from "../types/ppt";
@@ -29,9 +31,12 @@ import { fileToChatAttachment } from "./ChatInput";
 import {
   applyConsistencyFixes,
   beautifySlideLayout,
+  buildAgendaDividersAndActionSlide,
   buildBackupSlidesFromQna,
+  buildEngineeringDiagramSlide,
   buildSlidesFromApprovedOutline,
   fixTextFitIssues,
+  generateAgendaAndActionsPlan,
   generateDeckOutlineFromReport,
   runManagementDeckReview,
   runPresentationConsistencyCheck,
@@ -45,6 +50,8 @@ export type DeckToolMode =
   | "text_fit"
   | "deck_review"
   | "beautify"
+  | "diagrams"
+  | "agenda_actions"
   | null;
 
 interface PowerPointDeckModalProps {
@@ -82,6 +89,22 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
   const [beautifySlideIdx, setBeautifySlideIdx] = useState<number>(1);
   const [beautifyStyle, setBeautifyStyle] =
     useState<SlideBeautifyStyle>("two_column");
+
+  // Engineering Diagram & Timeline Generator states
+  const [diagramKind, setDiagramKind] =
+    useState<EngineeringDiagramKind>("wellbore_schematic");
+  const [diagramTitle, setDiagramTitle] = useState(
+    "WELL-04 — Wellbore & ESP Completion Schematic"
+  );
+  const [diagramPrompt, setDiagramPrompt] = useState(
+    "WELL-04: Surface Casing at 1850 ft, ESP Pump Intake at 6850 ft (PIP 420 psi, 56 Hz), Perforations at 7950 ft to 8250 ft, TD 8600 ft"
+  );
+
+  // Executive Agenda, Section Dividers & Action-Tracker states
+  const [agendaPlan, setAgendaPlan] = useState<AgendaAndActionsPlan | null>(null);
+  const [includeAgendaSlide, setIncludeAgendaSlide] = useState(true);
+  const [includeSectionDividers, setIncludeSectionDividers] = useState(false);
+  const [includeActionMatrixSlide, setIncludeActionMatrixSlide] = useState(true);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -257,6 +280,62 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
     }
   };
 
+  const handleBuildDiagram = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const { summaryMessage, undoSnapshot } = await buildEngineeringDiagramSlide({
+        diagramKind,
+        title: diagramTitle,
+        descriptionPrompt: diagramPrompt,
+        settings,
+      });
+      onCompleted(summaryMessage, [undoSnapshot]);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleScanAgendaAndActions = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const plan = await generateAgendaAndActionsPlan(settings);
+      setAgendaPlan(plan);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleBuildAgendaAndActions = async () => {
+    if (!agendaPlan) return;
+    setBusy(true);
+    setError("");
+    try {
+      const { createdCount, undoSnapshots } = await buildAgendaDividersAndActionSlide({
+        plan: agendaPlan,
+        includeAgendaSlide,
+        includeSectionDividers,
+        includeActionMatrixSlide,
+        settings,
+      });
+      onCompleted(
+        `Built ${createdCount} Executive Agenda / Section / Action-Tracker slide(s).`,
+        undoSnapshots
+      );
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const modalTitle =
     mode === "report_to_deck"
       ? "📄 Report / PDF → Slide Deck (Outline & Approval)"
@@ -266,7 +345,11 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
           ? "📐 Slide Text-Fit Fixer"
           : mode === "deck_review"
             ? "🎯 Management Q&A & Deck Reviewer"
-            : "🎨 Smart Slide Layout Beautifier";
+            : mode === "beautify"
+              ? "🎨 Smart Slide Layout Beautifier"
+              : mode === "diagrams"
+                ? "🛠️ AI Engineering Diagram & Timeline Generator"
+                : "📑 Executive Agenda, Dividers & Action-Tracker";
 
   return (
     <Dialog open={Boolean(mode)} onOpenChange={(_, d) => !d.open && onClose()}>
@@ -722,6 +805,244 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
               </div>
             )}
 
+            {/* MODE 8: AI ENGINEERING DIAGRAM & TIMELINE GENERATOR */}
+            {mode === "diagrams" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 12, color: "#444" }}>
+                  Render high-resolution 2x-DPI vector engineering schematics, process flowcharts, or rig execution Gantt timelines directly onto a new presentation slide.
+                </div>
+
+                <div>
+                  <Label size="small">Diagram Type</Label>
+                  <Select
+                    size="small"
+                    style={{ width: "100%", marginTop: 4 }}
+                    value={diagramKind}
+                    onChange={(_, d) => {
+                      const k = d.value as EngineeringDiagramKind;
+                      setDiagramKind(k);
+                      if (k === "wellbore_schematic") {
+                        setDiagramTitle("WELL-04 — Wellbore & ESP Completion Schematic");
+                        setDiagramPrompt(
+                          "WELL-04: Surface Casing at 1850 ft, ESP Pump Intake at 6850 ft (PIP 420 psi, 56 Hz), Perforations at 7950 ft to 8250 ft, TD 8600 ft"
+                        );
+                      } else if (k === "process_flowchart") {
+                        setDiagramTitle("Central Processing Facility — Surface Production Train");
+                        setDiagramPrompt(
+                          "Wellhead Manifold | 18 wells, 420 psig | primary\nHP 3-Phase Separator | 14,500 BFPD | accent\nFree-Water Knockout | BSW 48% -> 2% | normal\nElectrostatic Coalescer | Export Spec <0.2% | normal\nPipeline Export | 7,450 BOPD Net Oil | success"
+                        );
+                      } else {
+                        setDiagramTitle("Workover & ESP Upgrade Rig Execution Schedule");
+                        setDiagramPrompt(
+                          "Move & Rig Up | Days 1–2 | Completed | done\nKill Well & POOH | Days 3–4 | Completed | done\nAcid Stimulation | Day 5 | In Progress | active\nRIH 562-Series ESP | Days 6–7 | Planned | pending\nCommission & Test | Day 8 | Target +450 BOPD | pending"
+                        );
+                      }
+                    }}
+                  >
+                    <option value="wellbore_schematic">
+                      Wellbore &amp; ESP Completion Schematic (Depths, Casing, Tubing, ESP, Perfs)
+                    </option>
+                    <option value="process_flowchart">
+                      Surface Facility Process Flowchart (Wellhead → Separator → Export)
+                    </option>
+                    <option value="workover_timeline">
+                      Workover / Rig Execution Timeline (Gantt / Milestone Schedule)
+                    </option>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label size="small">Slide &amp; Diagram Title</Label>
+                  <Input
+                    size="small"
+                    style={{ width: "100%", marginTop: 4 }}
+                    value={diagramTitle}
+                    onChange={(_, d) => setDiagramTitle(d.value)}
+                  />
+                </div>
+
+                <div>
+                  <Label size="small">
+                    {diagramKind === "wellbore_schematic"
+                      ? "Wellbore Depths & Completion Specs (Natural text or key-values)"
+                      : diagramKind === "process_flowchart"
+                        ? "Process Nodes (One per line: Title | Subtitle | primary/accent/success/warning/normal)"
+                        : "Timeline Phases (One per line: Phase | Duration/Day | Metric/Note | done/active/pending)"}
+                  </Label>
+                  <Textarea
+                    rows={5}
+                    style={{ width: "100%", marginTop: 4, fontFamily: "monospace", fontSize: 11 }}
+                    value={diagramPrompt}
+                    onChange={(_, d) => setDiagramPrompt(d.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* MODE 9: EXECUTIVE AGENDA, SECTION DIVIDERS & ACTION-TRACKER BUILDER */}
+            {mode === "agenda_actions" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 12, color: "#444" }}>
+                  Scans all slides in your deck to construct a structured <strong>Executive Agenda (Slide #2)</strong>, optional <strong>Section Divider slides</strong>, and a closing <strong>Executive Action-Tracker &amp; Decisions Matrix table slide</strong>.
+                </div>
+
+                <Button
+                  appearance="secondary"
+                  disabled={busy}
+                  onClick={handleScanAgendaAndActions}
+                >
+                  🔍 Scan Deck &amp; Propose Agenda + Action Tracker
+                </Button>
+
+                {agendaPlan && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        padding: 8,
+                        background: "#faf9f8",
+                        border: "1px solid #e1dfdd",
+                        borderRadius: 6,
+                      }}
+                    >
+                      <Label weight="semibold" size="small">
+                        Slides to Generate:
+                      </Label>
+                      <Checkbox
+                        checked={includeAgendaSlide}
+                        onChange={(_, d) => setIncludeAgendaSlide(Boolean(d.checked))}
+                        label={`Insert Executive Agenda / Table of Contents at Slide #2 (${agendaPlan.sections.filter((s) => s.selected).length} sections)`}
+                      />
+                      <Checkbox
+                        checked={includeSectionDividers}
+                        onChange={(_, d) => setIncludeSectionDividers(Boolean(d.checked))}
+                        label="Append Branded Section Header Divider Slides"
+                      />
+                      <Checkbox
+                        checked={includeActionMatrixSlide}
+                        onChange={(_, d) => setIncludeActionMatrixSlide(Boolean(d.checked))}
+                        label={`Append Closing Executive Action-Tracker & Decisions Matrix Table (${agendaPlan.actions.filter((a) => a.selected).length} actions)`}
+                      />
+                    </div>
+
+                    <Label weight="semibold" size="small">
+                      Agenda Sections ({agendaPlan.sections.length}):
+                    </Label>
+                    <div
+                      style={{
+                        maxHeight: 135,
+                        overflowY: "auto",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      {agendaPlan.sections.map((sec, idx) => (
+                        <div
+                          key={sec.id}
+                          style={{
+                            padding: 6,
+                            border: "1px solid #e0e0e0",
+                            borderRadius: 4,
+                            fontSize: 11,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <Checkbox
+                            checked={sec.selected}
+                            onChange={(_, d) => {
+                              setAgendaPlan((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      sections: prev.sections.map((item, i) =>
+                                        i === idx
+                                          ? { ...item, selected: Boolean(d.checked) }
+                                          : item
+                                      ),
+                                    }
+                                  : prev
+                              );
+                            }}
+                          />
+                          <div>
+                            <strong>
+                              {sec.sectionNumber}. {sec.title}
+                            </strong>{" "}
+                            <span style={{ color: "#666" }}>
+                              (Slide #{sec.startSlideIndex}) — {sec.subtitle}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <Label weight="semibold" size="small">
+                      Action-Tracker Matrix Items ({agendaPlan.actions.length}):
+                    </Label>
+                    <div
+                      style={{
+                        maxHeight: 150,
+                        overflowY: "auto",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      {agendaPlan.actions.map((act, idx) => (
+                        <div
+                          key={act.id}
+                          style={{
+                            padding: 6,
+                            border: "1px solid #e0e0e0",
+                            borderRadius: 4,
+                            fontSize: 11,
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 6,
+                          }}
+                        >
+                          <Checkbox
+                            checked={act.selected}
+                            onChange={(_, d) => {
+                              setAgendaPlan((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      actions: prev.actions.map((item, i) =>
+                                        i === idx
+                                          ? { ...item, selected: Boolean(d.checked) }
+                                          : item
+                                      ),
+                                    }
+                                  : prev
+                              );
+                            }}
+                          />
+                          <div>
+                            <div>
+                              <strong>[{act.assetOrWell}] {act.action}</strong>
+                            </div>
+                            <div style={{ color: "#555" }}>
+                              Owner: <strong>{act.owner}</strong> | Target:{" "}
+                              <strong>{act.targetDate}</strong> | Priority:{" "}
+                              <span style={{ color: "#107c41", fontWeight: 600 }}>
+                                {act.priority} ({act.status})
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {busy && (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Spinner size="tiny" />
@@ -810,6 +1131,28 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
                 style={{ backgroundColor: "#b73618" }}
               >
                 🎨 Apply Layout Beautifier
+              </Button>
+            )}
+
+            {mode === "diagrams" && (
+              <Button
+                appearance="primary"
+                disabled={busy}
+                onClick={handleBuildDiagram}
+                style={{ backgroundColor: "#b73618" }}
+              >
+                🛠️ Render Engineering Diagram Slide
+              </Button>
+            )}
+
+            {mode === "agenda_actions" && agendaPlan && (
+              <Button
+                appearance="primary"
+                disabled={busy}
+                onClick={handleBuildAgendaAndActions}
+                style={{ backgroundColor: "#b73618" }}
+              >
+                📑 Build Selected Agenda &amp; Action Slides
               </Button>
             )}
 

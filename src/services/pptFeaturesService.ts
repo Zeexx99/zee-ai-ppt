@@ -1,11 +1,15 @@
 import { ChatAttachment, SlideUndoSnapshot } from "../types/chat";
 import {
+  ActionMatrixItem,
+  AgendaAndActionsPlan,
+  AgendaSectionItem,
   ConsistencyIssue,
   CrossSlideContradiction,
   DeckOutlinePlan,
   DeckOutlineSlide,
   DeckQnaItem,
   DeckReviewReport,
+  EngineeringDiagramKind,
   ExcelResultsPayload,
   PetroleumResultCategory,
   SlideBeautifyStyle,
@@ -23,10 +27,15 @@ import {
   DeclineCurveParams,
   EspCurveParams,
   KpiCardItem,
+  ProcessFlowNode,
   renderDeclineCurveSvg,
   renderEspCurveSvg,
   renderKpiCardsSvg,
+  renderProcessFlowchartSvg,
+  renderWellboreSchematicSvg,
+  renderWorkoverTimelineSvg,
   svgToPngBase64,
+  TimelineMilestone,
 } from "./chartGeneratorService";
 import {
   convertAttachmentsToGeminiParts,
@@ -43,6 +52,7 @@ import {
   insertTextBox,
   listSlides,
   readSlide,
+  reorderSlide,
   replaceSlideText,
   setSlideTitle,
   writeSpeakerNotes,
@@ -1448,3 +1458,516 @@ export async function generateSpeakerNotesForSlide(
 
   return { notes, undoSnapshot };
 }
+
+/**
+ * FEATURE: AI Engineering Diagram & Timeline Generator
+ * Renders Wellbore Schematics, Surface Process Flowcharts, and Workover Timelines onto slides.
+ */
+export async function buildEngineeringDiagramSlide(options: {
+  diagramKind: EngineeringDiagramKind;
+  title: string;
+  descriptionPrompt: string;
+  settings: ZeeSettings;
+}): Promise<{
+  slideIndex: number;
+  summaryMessage: string;
+  svgMarkup: string;
+  undoSnapshot: SlideUndoSnapshot;
+}> {
+  const brandColor = options.settings.companyTemplate?.enabled
+    ? options.settings.companyTemplate.primaryColor
+    : "#B73618";
+
+  const rawText = `${options.title}\n${options.descriptionPrompt}`;
+  let svgMarkup = "";
+  let slideTitle = options.title.trim();
+  let bullets: string[] = [];
+
+  if (options.diagramKind === "wellbore_schematic") {
+    const wellMatch = rawText.match(/\b((?:WELL|Well|PROD|INJ|W)-\d{1,4}[A-Za-z]?)\b/);
+    const wellName = wellMatch ? wellMatch[1].toUpperCase() : options.title || "WELL-01";
+    const depths = Array.from(rawText.matchAll(/\b(\d{3,5})\s*(?:ft|feet)\b/gi)).map((m) =>
+      Number(m[1])
+    );
+    const surfDepth = depths.find((d) => d >= 500 && d <= 3500) || 1850;
+    const espDepth = depths.find((d) => d > 3500 && d <= 7600) || 6850;
+    const perfTop = depths.find((d) => d > 7600 && d <= 8800) || 7950;
+    const perfBot = depths.find((d) => d > perfTop) || perfTop + 300;
+    const prodDepth = Math.max(perfBot + 250, 8600);
+    const pipMatch = rawText.match(/pip[:\s=-]*(\d+(?:\.\d+)?)/i);
+    const hzMatch = rawText.match(/(\d+(?:\.\d+)?)\s*hz/i);
+
+    svgMarkup = renderWellboreSchematicSvg({
+      wellName,
+      surfaceCasingDepthFt: surfDepth,
+      productionCasingDepthFt: prodDepth,
+      espPumpDepthFt: espDepth,
+      perforationTopFt: perfTop,
+      perforationBottomFt: perfBot,
+      pipPsi: pipMatch ? Number(pipMatch[1]) : 420,
+      frequencyHz: hzMatch ? Number(hzMatch[1]) : 56,
+      primaryColor: brandColor,
+    });
+
+    if (!slideTitle) {
+      slideTitle = `${wellName} — Wellbore & ESP Completion Schematic`;
+    }
+    bullets = [
+      `Surface Casing Shoe set at ${surfDepth.toLocaleString()} ft; Production Casing TD at ${prodDepth.toLocaleString()} ft.`,
+      `ESP Pump Intake landed at ${espDepth.toLocaleString()} ft above Production Packer.`,
+      `Active Perforation Interval: ${perfTop.toLocaleString()}–${perfBot.toLocaleString()} ft in target reservoir sand.`,
+    ];
+  } else if (options.diagramKind === "process_flowchart") {
+    const rawLines = options.descriptionPrompt
+      .split(/\r?\n|->|→|;/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const nodes: ProcessFlowNode[] =
+      rawLines.length >= 2
+        ? rawLines.slice(0, 6).map((line, idx) => {
+            const parts = line.split(/[:|—-]/).map((p) => p.trim());
+            return {
+              id: `node-${idx + 1}`,
+              label: parts[0] || `Stage ${idx + 1}`,
+              subLabel: parts[1] || "Active Unit",
+              metric: parts[2] || "",
+              status: /warn|high|choke/i.test(line)
+                ? "warning"
+                : /crit|alarm|shut/i.test(line)
+                  ? "critical"
+                  : "normal",
+            };
+          })
+        : [
+            {
+              id: "n1",
+              label: "Wellhead & Choke",
+              subLabel: "Production Manifold",
+              metric: "WHP: 340 psi",
+            },
+            {
+              id: "n2",
+              label: "3-Phase Separator",
+              subLabel: "Primary Gas/Liquid Split",
+              metric: "1,450 bbl/d",
+            },
+            {
+              id: "n3",
+              label: "Heater Treater",
+              subLabel: "Emulsion Dehydration",
+              metric: "WC < 1.0%",
+            },
+            {
+              id: "n4",
+              label: "Water Injection Plant",
+              subLabel: "Produced Water Disposal",
+              metric: "1,850 psi",
+            },
+            {
+              id: "n5",
+              label: "Gas Compression",
+              subLabel: "Sales & Fuel Gas",
+              metric: "1.2 MMSCF/d",
+            },
+            {
+              id: "n6",
+              label: "Export Oil Tanks",
+              subLabel: "LACT Custody Transfer",
+              metric: "1,180 stb/d",
+            },
+          ];
+
+    if (!slideTitle) {
+      slideTitle = "Surface Facility & Production Process Flowchart";
+    }
+    svgMarkup = renderProcessFlowchartSvg({
+      title: slideTitle,
+      nodes,
+      primaryColor: brandColor,
+    });
+    bullets = nodes
+      .slice(0, 4)
+      .map(
+        (n, i) =>
+          `Step ${i + 1} (${n.label}): ${n.subLabel || "Process stage"}${n.metric ? ` — ${n.metric}` : ""}`
+      );
+  } else {
+    const rawLines = options.descriptionPrompt
+      .split(/\r?\n|;/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const milestones: TimelineMilestone[] =
+      rawLines.length >= 2
+        ? rawLines.slice(0, 6).map((line, idx) => {
+            const parts = line.split(/[:|—-]/).map((p) => p.trim());
+            return {
+              phase: parts[0] || `Phase ${idx + 1}`,
+              task: parts[1] || line,
+              durationOrDate: parts[2] || `Days ${idx * 2 + 1}–${idx * 2 + 2}`,
+              owner: parts[3] || "Rig / Well Ops",
+              status: idx === 0 ? "completed" : idx === 1 ? "active" : "planned",
+            };
+          })
+        : [
+            {
+              phase: "Phase 1",
+              task: "MIRU Workover Rig & Kill Well",
+              durationOrDate: "Days 1–2",
+              owner: "Well Services",
+              status: "completed",
+            },
+            {
+              phase: "Phase 2",
+              task: "POOH Failed Tubing & ESP String",
+              durationOrDate: "Days 3–4",
+              owner: "Rig Crew / ESP Eng",
+              status: "active",
+            },
+            {
+              phase: "Phase 3",
+              task: "Matrix Acid Stimulation & Cleanout",
+              durationOrDate: "Days 5–6",
+              owner: "Stimulation Team",
+              status: "planned",
+            },
+            {
+              phase: "Phase 4",
+              task: "RIH New 56 Hz ESP & Commission VSD",
+              durationOrDate: "Days 7–8",
+              owner: "Production Eng",
+              status: "planned",
+            },
+          ];
+
+    if (!slideTitle) {
+      slideTitle = "Workover & Engineering Execution Timeline";
+    }
+    svgMarkup = renderWorkoverTimelineSvg({
+      title: slideTitle,
+      milestones,
+      primaryColor: brandColor,
+    });
+    bullets = milestones.map(
+      (m) => `${m.phase} (${m.durationOrDate}): ${m.task} [${m.owner || "Engineering"}]`
+    );
+  }
+
+  const pngBase64 = await svgToPngBase64(svgMarkup, 680, 380);
+  const added = await addSlide({
+    title: slideTitle,
+    bullets,
+    layoutName: options.settings.companyTemplate?.enabled
+      ? options.settings.companyTemplate.layoutName
+      : "Title and Content",
+    notes: `${slideTitle}\n${bullets.join("\n")}`,
+    settings: options.settings,
+  });
+
+  if (pngBase64) {
+    try {
+      await insertImage({
+        slideNumber: added.slideIndex,
+        base64Data: pngBase64,
+        left: 52,
+        top: 175,
+        width: 590,
+        height: 315,
+      });
+    } catch {
+      // Ignore on unsupported host
+    }
+  }
+
+  return {
+    slideIndex: added.slideIndex,
+    summaryMessage: `Created engineering diagram slide #${added.slideIndex}: "${slideTitle}".`,
+    svgMarkup,
+    undoSnapshot: {
+      stepId: `diagram-${Date.now()}`,
+      toolName: "addSlide",
+      timestamp: Date.now(),
+      slideIndex: added.slideIndex,
+      createdSlideId: added.slideId,
+      actionType: "add_slide",
+    },
+  };
+}
+
+/**
+ * FEATURE: Executive Agenda, Section Dividers & Action-Tracker Builder
+ */
+export function extractDeterministicAgendaAndActions(
+  slides: SlideDetail[]
+): AgendaAndActionsPlan {
+  const presentationTitle =
+    slides[0]?.title || "Executive Engineering & Surveillance Review";
+
+  const sections: AgendaSectionItem[] = slides.slice(0, 8).map((sl, idx) => ({
+    id: `sec-${idx + 1}`,
+    sectionNumber: idx + 1,
+    title: sl.title || `Section ${idx + 1}`,
+    subtitle:
+      sl.fullText
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .find((l) => l && l !== sl.title)
+        ?.slice(0, 85) || `Key technical findings from Slide ${sl.index}`,
+    startSlideIndex: sl.index,
+    selected: true,
+  }));
+
+  const wellRegex = /\b((?:WELL|Well|PROD|INJ|W)-\d{1,4}[A-Za-z]?)\b/;
+  const actions: ActionMatrixItem[] = [];
+
+  for (const sl of slides) {
+    const lines = (sl.fullText || "")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      if (
+        /recommend|action|workover|optimize|install|upsize|acid|schedule|monitor|choke|vsd/i.test(
+          line
+        )
+      ) {
+        const wellMatch = line.match(wellRegex) || sl.title.match(wellRegex);
+        actions.push({
+          id: `act-${actions.length + 1}`,
+          assetOrWell: wellMatch ? wellMatch[1].toUpperCase() : `Slide ${sl.index}`,
+          action: line.replace(/^[•*-]\s*/, "").slice(0, 90),
+          owner: /esp|vsd|pump/i.test(line)
+            ? "Artificial Lift Eng"
+            : /acid|workover|rig/i.test(line)
+              ? "Well Intervention"
+              : "Production / Reservoir Eng",
+          targetDate: "Q4 / Next 14 Days",
+          priority: /urgent|crit|fail|trip|workover/i.test(line) ? "High" : "Medium",
+          status: "Planned",
+          selected: true,
+        });
+      }
+    }
+  }
+
+  if (actions.length === 0) {
+    actions.push(
+      {
+        id: "act-1",
+        assetOrWell: "Field Surveillance",
+        action: "Verify ESP operating frequency (Hz) and PIP drawdown margins across priority wells",
+        owner: "Production Engineering",
+        targetDate: "Next 7 Days",
+        priority: "High",
+        status: "Open",
+        selected: true,
+      },
+      {
+        id: "act-2",
+        assetOrWell: "Reservoir Management",
+        action: "Update Arps DCA forecast and well test allocation tables before monthly review",
+        owner: "Reservoir Engineering",
+        targetDate: "Month-End",
+        priority: "Medium",
+        status: "In Progress",
+        selected: true,
+      }
+    );
+  }
+
+  return {
+    presentationTitle,
+    sections,
+    actions: actions.slice(0, 8),
+  };
+}
+
+export async function generateAgendaAndActionsPlan(
+  settings: ZeeSettings
+): Promise<AgendaAndActionsPlan> {
+  const summaries = await listSlides();
+  const details: SlideDetail[] = [];
+  for (const s of summaries) {
+    details.push(await readSlide(s.index));
+  }
+
+  const fallback = extractDeterministicAgendaAndActions(details);
+  const deckDump = details
+    .map((d) => `Slide ${d.index} ("${d.title}"):\n${d.fullText}`)
+    .join("\n\n---\n\n");
+
+  try {
+    const prompt = [
+      "Analyze this PowerPoint presentation and generate an Executive Agenda (3 to 6 major sections) and an Action-Tracker Matrix (3 to 6 concrete engineering/management actions).",
+      buildDirectionAndLanguageInstruction(settings),
+      "Return ONLY valid JSON matching this schema:",
+      `{
+  "presentationTitle": "Overall Deck Title",
+  "sections": [
+    { "sectionNumber": 1, "title": "Section Title", "subtitle": "1-line scope summary", "startSlideIndex": 1 }
+  ],
+  "actions": [
+    {
+      "assetOrWell": "WELL-04 / North Field",
+      "action": "Specific action item",
+      "owner": "Production Eng",
+      "targetDate": "Next 14 Days",
+      "priority": "High",
+      "status": "Open"
+    }
+  ]
+}`,
+      `\nSLIDES:\n${deckDump}`,
+    ].join("\n");
+
+    const res = await generateGeminiTurn(settings, [{ role: "user", parts: [{ text: prompt }] }]);
+    const parsed = JSON.parse(extractJsonBlock(res.text));
+
+    return {
+      presentationTitle: String(parsed.presentationTitle || fallback.presentationTitle),
+      sections: Array.isArray(parsed.sections) && parsed.sections.length > 0
+        ? parsed.sections.map((s: any, idx: number) => ({
+            id: `sec-${idx + 1}`,
+            sectionNumber: Number(s.sectionNumber) || idx + 1,
+            title: String(s.title || `Section ${idx + 1}`),
+            subtitle: String(s.subtitle || ""),
+            startSlideIndex: Number(s.startSlideIndex) || idx + 1,
+            selected: true,
+          }))
+        : fallback.sections,
+      actions: Array.isArray(parsed.actions) && parsed.actions.length > 0
+        ? parsed.actions.map((a: any, idx: number) => ({
+            id: `act-${idx + 1}`,
+            assetOrWell: String(a.assetOrWell || "Field"),
+            action: String(a.action || ""),
+            owner: String(a.owner || "Engineering"),
+            targetDate: String(a.targetDate || "TBD"),
+            priority:
+              a.priority === "High" || a.priority === "Low" ? a.priority : "Medium",
+            status: String(a.status || "Open"),
+            selected: true,
+          }))
+        : fallback.actions,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export async function buildAgendaDividersAndActionSlide(options: {
+  plan: AgendaAndActionsPlan;
+  includeAgendaSlide: boolean;
+  includeSectionDividers: boolean;
+  includeActionMatrixSlide: boolean;
+  settings: ZeeSettings;
+}): Promise<{ createdCount: number; undoSnapshots: SlideUndoSnapshot[] }> {
+  const undoSnapshots: SlideUndoSnapshot[] = [];
+  let createdCount = 0;
+
+  const selectedSections = options.plan.sections.filter((s) => s.selected);
+  const selectedActions = options.plan.actions.filter((a) => a.selected);
+
+  // 1. Executive Agenda Slide (placed at Slide #2 right after Title Slide)
+  if (options.includeAgendaSlide && selectedSections.length > 0) {
+    const agendaBullets = selectedSections.map(
+      (s, idx) =>
+        `0${idx + 1}. ${s.title}${s.subtitle ? ` — ${s.subtitle}` : ""}`
+    );
+    const added = await addSlide({
+      title: "Executive Agenda & Presentation Roadmap",
+      bullets: agendaBullets,
+      layoutName: options.settings.companyTemplate?.enabled
+        ? options.settings.companyTemplate.layoutName
+        : "Title and Content",
+      notes: `Agenda overview covering ${selectedSections.length} sections.`,
+      settings: options.settings,
+    });
+
+    if (added.slideIndex > 2) {
+      await reorderSlide(added.slideIndex, 2);
+    }
+
+    createdCount += 1;
+    undoSnapshots.push({
+      stepId: `agenda-slide-${Date.now()}`,
+      toolName: "addSlide",
+      timestamp: Date.now(),
+      slideIndex: Math.min(2, added.slideIndex),
+      createdSlideId: added.slideId,
+      actionType: "add_slide",
+    });
+  }
+
+  // 2. Optional Section Header Divider Slides
+  if (options.includeSectionDividers && selectedSections.length > 0) {
+    for (let i = 0; i < selectedSections.length; i++) {
+      const sec = selectedSections[i];
+      const divSlide = await addSlide({
+        title: `0${i + 1}  |  ${sec.title}`,
+        bullets: sec.subtitle ? [sec.subtitle] : [],
+        layoutName: "Section Header",
+        notes: `Section transition: ${sec.title}`,
+        settings: options.settings,
+      });
+      createdCount += 1;
+      undoSnapshots.push({
+        stepId: `divider-${sec.id}-${Date.now()}`,
+        toolName: "addSlide",
+        timestamp: Date.now(),
+        slideIndex: divSlide.slideIndex,
+        createdSlideId: divSlide.slideId,
+        actionType: "add_slide",
+      });
+    }
+  }
+
+  // 3. Closing Executive Action-Tracker & Decisions Matrix Slide
+  if (options.includeActionMatrixSlide && selectedActions.length > 0) {
+    const highCount = selectedActions.filter((a) => a.priority === "High").length;
+    const actionSlide = await addSlide({
+      title: "Executive Action-Tracker & Engineering Decisions Matrix",
+      bullets: [
+        `Total Tracked Actions: ${selectedActions.length} (${highCount} High-Priority Engineering Items)`,
+        "Accountability assigned across Reservoir, Artificial Lift (ESP), and Well Operations teams.",
+      ],
+      layoutName: options.settings.companyTemplate?.enabled
+        ? options.settings.companyTemplate.layoutName
+        : "Title and Content",
+      notes: `Closing action tracker with ${selectedActions.length} assigned deliverables.`,
+      settings: options.settings,
+    });
+
+    await insertTable({
+      slideNumber: actionSlide.slideIndex,
+      title: "Action Items & Ownership Matrix",
+      headers: ["Well / Asset", "Action / Decision", "Owner", "Target Date", "Priority", "Status"],
+      rows: selectedActions.map((a) => [
+        a.assetOrWell,
+        a.action,
+        a.owner,
+        a.targetDate,
+        a.priority,
+        a.status,
+      ]),
+      left: 44,
+      top: 178,
+      width: 632,
+      height: 270,
+      settings: options.settings,
+    });
+
+    createdCount += 1;
+    undoSnapshots.push({
+      stepId: `action-matrix-${Date.now()}`,
+      toolName: "addSlide",
+      timestamp: Date.now(),
+      slideIndex: actionSlide.slideIndex,
+      createdSlideId: actionSlide.slideId,
+      actionType: "add_slide",
+    });
+  }
+
+  return { createdCount, undoSnapshots };
+}
+

@@ -4,10 +4,14 @@ import {
   renderDeclineCurveSvg,
   renderEspCurveSvg,
   renderKpiCardsSvg,
+  renderWellboreSchematicSvg,
+  renderProcessFlowchartSvg,
+  renderWorkoverTimelineSvg,
 } from "../src/services/chartGeneratorService";
 import {
   beautifySlideLayout,
   detectCrossSlideContradictions,
+  extractDeterministicAgendaAndActions,
   parseMultiWellTable,
 } from "../src/services/pptFeaturesService";
 import { DEFAULT_SETTINGS } from "../src/types/settings";
@@ -68,9 +72,47 @@ describe("chartGeneratorService — Arps Decline, ESP Curve & KPI Cards", () => 
     expect(kpiSvg).toContain("<svg");
     expect(kpiSvg).toContain("1,420 bbl/d");
   });
+
+  it("renders valid SVG markup for Wellbore Schematic, Process Flowchart, and Workover Timeline", () => {
+    const wellboreSvg = renderWellboreSchematicSvg({
+      wellName: "WELL-04",
+      surfaceCasingDepthFt: 1850,
+      productionCasingDepthFt: 8600,
+      espPumpDepthFt: 6850,
+      perforationTopFt: 7950,
+      perforationBottomFt: 8250,
+    });
+    expect(wellboreSvg).toContain("<svg");
+    expect(wellboreSvg).toContain("WELL-04");
+    expect(wellboreSvg).toContain("6,850 ft");
+    expect(wellboreSvg).toContain("7,950");
+
+    const flowSvg = renderProcessFlowchartSvg({
+      title: "CPF Production Train",
+      nodes: [
+        { id: "n1", label: "Wellhead", subLabel: "Manifold", metric: "420 psig", status: "normal" },
+        { id: "n2", label: "Separator", subLabel: "3-Phase", metric: "14,500 BFPD", status: "warning" },
+        { id: "n3", label: "Export", subLabel: "Pipeline", metric: "7,450 BOPD", status: "normal" },
+      ],
+    });
+    expect(flowSvg).toContain("<svg");
+    expect(flowSvg).toContain("CPF Production Train");
+    expect(flowSvg).toContain("14,500 BFPD");
+
+    const timelineSvg = renderWorkoverTimelineSvg({
+      title: "Workover Rig Schedule",
+      milestones: [
+        { phase: "Phase 1", task: "Move & Rig Up", durationOrDate: "Days 1–2", status: "completed" },
+        { phase: "Phase 2", task: "RIH 562-Series ESP", durationOrDate: "Days 3–4", status: "active" },
+      ],
+    });
+    expect(timelineSvg).toContain("<svg");
+    expect(timelineSvg).toContain("Workover Rig Schedule");
+    expect(timelineSvg).toContain("562-Series");
+  });
 });
 
-describe("pptFeaturesService — Multi-Well Parser, Contradictions & Beautifier", () => {
+describe("pptFeaturesService — Multi-Well Parser, Contradictions, Beautifier & Agenda Builder", () => {
   it("parses multi-well Excel/TSV tables into structured WellBookRow items", () => {
     const raw = [
       "Well\tOil Rate (bbl/d)\tWC (%)\tGOR (scf/stb)\tPIP (psi)\tESP Hz\tStatus",
@@ -121,4 +163,39 @@ describe("pptFeaturesService — Multi-Well Parser, Contradictions & Beautifier"
     expect(res.summary).toContain("Slide 1");
     expect(res.undoSnapshot).toBeDefined();
   });
+
+  it("extracts deterministic Agenda sections and Action-Tracker Matrix items from slides", () => {
+    const plan = extractDeterministicAgendaAndActions([
+      {
+        index: 1,
+        id: "s-1",
+        title: "Q3 Production Operations Review",
+        fullText: "Q3 Production Operations Review\nField Engineering Team",
+        shapes: [],
+        speakerNotes: "",
+      },
+      {
+        index: 2,
+        id: "s-2",
+        title: "ESP Surveillance & Reliability",
+        fullText: "ESP Surveillance & Reliability\nAction: Upsize W-104 ESP to 562-Series for +380 bbl/d.",
+        shapes: [],
+        speakerNotes: "",
+      },
+      {
+        index: 3,
+        id: "s-3",
+        title: "Water Injection Optimization",
+        fullText: "Water Injection Optimization\nRecommend acidizing injector WI-02 to restore 2,500 bwpd.",
+        shapes: [],
+        speakerNotes: "",
+      },
+    ]);
+
+    expect(plan.sections.length).toBeGreaterThanOrEqual(2);
+    expect(plan.sections[0].title).toBe("Q3 Production Operations Review");
+    expect(plan.actions.length).toBeGreaterThanOrEqual(2);
+    expect(plan.actions[0].action).toContain("Upsize W-104 ESP");
+  });
 });
+

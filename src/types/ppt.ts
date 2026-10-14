@@ -159,3 +159,35 @@ export interface DeckReviewReport {
 }
 
 export type SlideBeautifyStyle = "two_column" | "three_cards" | "align_grid";
+
+export type EngineeringDiagramKind =
+  | "wellbore_schematic"
+  | "process_flowchart"
+  | "workover_timeline";
+
+export interface AgendaSectionItem {
+  id: string;
+  sectionNumber: number;
+  title: string;
+  subtitle: string;
+  startSlideIndex: number;
+  selected: boolean;
+}
+
+export interface ActionMatrixItem {
+  id: string;
+  assetOrWell: string;
+  action: string;
+  owner: string;
+  targetDate: string;
+  priority: "High" | "Medium" | "Low";
+  status: string;
+  selected: boolean;
+}
+
+export interface AgendaAndActionsPlan {
+  presentationTitle: string;
+  sections: AgendaSectionItem[];
+  actions: ActionMatrixItem[];
+}
+

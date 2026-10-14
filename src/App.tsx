@@ -560,6 +560,8 @@ export const App: React.FC = () => {
         onOpenTextFitFixer={() => setDeckModalMode("text_fit")}
         onOpenDeckReviewer={() => setDeckModalMode("deck_review")}
         onOpenBeautifier={() => setDeckModalMode("beautify")}
+        onOpenDiagrams={() => setDeckModalMode("diagrams")}
+        onOpenAgendaBuilder={() => setDeckModalMode("agenda_actions")}
       />
 
       {statusBanner && (
