@@ -1,5 +1,14 @@
 import React from "react";
-import { Button, Menu, MenuTrigger, MenuPopover, MenuList, MenuItem, Tooltip, Badge } from "@fluentui/react-components";
+import {
+  Button,
+  Menu,
+  MenuTrigger,
+  MenuPopover,
+  MenuList,
+  MenuItem,
+  Tooltip,
+  Badge,
+} from "@fluentui/react-components";
 import { QuickActionType } from "../types/chat";
 import { PowerPointApiRequirements } from "../types/ppt";
 import { ZeeSettings } from "../types/settings";
@@ -13,6 +22,8 @@ interface QuickActionsProps {
   onOpenExcelToSlide: () => void;
   onOpenConsistencyChecker: () => void;
   onOpenTextFitFixer: () => void;
+  onOpenDeckReviewer: () => void;
+  onOpenBeautifier: () => void;
 }
 
 export const QuickActions: React.FC<QuickActionsProps> = ({
@@ -24,17 +35,26 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
   onOpenExcelToSlide,
   onOpenConsistencyChecker,
   onOpenTextFitFixer,
+  onOpenDeckReviewer,
+  onOpenBeautifier,
 }) => {
   // Hide features that require unsupported PowerPointApi requirement sets instead of failing
   const canCreateSlides = !requirements.isPowerPointHost || requirements.pptApi1_1;
   const canInspectShapes = !requirements.isPowerPointHost || requirements.pptApi1_4;
-  const canWriteNotes = !requirements.isPowerPointHost || requirements.pptApi1_4 || requirements.pptApi1_7;
+  const canWriteNotes =
+    !requirements.isPowerPointHost || requirements.pptApi1_4 || requirements.pptApi1_7;
 
   return (
-    <div className="zee-compact-toolbar" style={{ flexDirection: "column", alignItems: "stretch", gap: 5 }}>
+    <div
+      className="zee-compact-toolbar"
+      style={{ flexDirection: "column", alignItems: "stretch", gap: 5 }}
+    >
       {/* Row 1: Text & Slide Quick Actions */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-        <Tooltip content="Rewrite selected text or active slide for executive clarity" relationship="description">
+        <Tooltip
+          content="Rewrite selected text or active slide for executive clarity"
+          relationship="description"
+        >
           <Button
             size="small"
             appearance="outline"
@@ -72,7 +92,10 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
           </MenuPopover>
         </Menu>
 
-        <Tooltip content="Summarize selected text or current slide into crisp bullets" relationship="description">
+        <Tooltip
+          content="Summarize selected text or current slide into crisp bullets"
+          relationship="description"
+        >
           <Button
             size="small"
             appearance="outline"
@@ -85,7 +108,10 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
         </Tooltip>
 
         {canWriteNotes && (
-          <Tooltip content="Generate speaker notes for the active slide and write to notes pane" relationship="description">
+          <Tooltip
+            content="Generate speaker notes for the active slide and write to notes pane"
+            relationship="description"
+          >
             <Button
               size="small"
               appearance="outline"
@@ -98,7 +124,10 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
           </Tooltip>
         )}
 
-        <Tooltip content="Convert oilfield units in selected text or slide (bbl/d, psi, ft, °F, scf/stb)" relationship="description">
+        <Tooltip
+          content="Convert oilfield units in selected text or slide (bbl/d, psi, ft, °F, scf/stb)"
+          relationship="description"
+        >
           <Button
             size="small"
             appearance="outline"
@@ -111,7 +140,7 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
         </Tooltip>
       </div>
 
-      {/* Row 2: PowerPoint-Specific Deck & Petroleum Tools */}
+      {/* Row 2: PowerPoint-Specific Deck, Petroleum & Review Tools */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
         {canCreateSlides && (
           <Tooltip
@@ -132,7 +161,7 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
 
         {canCreateSlides && (
           <Tooltip
-            content="Turn Zee AI Excel results (Decline Curve, ESP Analysis, Production QC) into a Results Slide"
+            content="Excel → Slide (Auto-Plot Decline/ESP Charts & KPIs) + Multi-Well Batch Well-Book Generator"
             relationship="description"
           >
             <Button
@@ -142,7 +171,41 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
               onClick={onOpenExcelToSlide}
               style={{ fontSize: 11, padding: "2px 7px" }}
             >
-              📊 Excel → Slide
+              📊 Excel / Well-Book
+            </Button>
+          </Tooltip>
+        )}
+
+        {canInspectShapes && (
+          <Tooltip
+            content="Management Q&A & Deck Reviewer: spot numerical contradictions across slides + build backup Q&A slides"
+            relationship="description"
+          >
+            <Button
+              size="small"
+              appearance="secondary"
+              disabled={disabled}
+              onClick={onOpenDeckReviewer}
+              style={{ fontSize: 11, padding: "2px 7px" }}
+            >
+              🎯 Q&amp;A Review
+            </Button>
+          </Tooltip>
+        )}
+
+        {canInspectShapes && (
+          <Tooltip
+            content="Smart Slide Beautifier: convert dense slides into 2-Column splits, 3-Card callouts, or aligned grids"
+            relationship="description"
+          >
+            <Button
+              size="small"
+              appearance="secondary"
+              disabled={disabled}
+              onClick={onOpenBeautifier}
+              style={{ fontSize: 11, padding: "2px 7px" }}
+            >
+              🎨 Beautify
             </Button>
           </Tooltip>
         )}

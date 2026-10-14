@@ -558,6 +558,8 @@ export const App: React.FC = () => {
         onOpenExcelToSlide={() => setExcelModalOpen(true)}
         onOpenConsistencyChecker={() => setDeckModalMode("consistency")}
         onOpenTextFitFixer={() => setDeckModalMode("text_fit")}
+        onOpenDeckReviewer={() => setDeckModalMode("deck_review")}
+        onOpenBeautifier={() => setDeckModalMode("beautify")}
       />
 
       {statusBanner && (

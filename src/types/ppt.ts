@@ -122,3 +122,40 @@ export interface TextFitIssue {
   recommendedFontSize?: number;
   selected: boolean;
 }
+
+export interface WellBookRow {
+  wellName: string;
+  metrics: Record<string, string>;
+  status?: string;
+  action?: string;
+}
+
+export interface CrossSlideContradiction {
+  id: string;
+  entity: string; // e.g. "WELL-04" or "Liquid Rate"
+  unit: string;
+  firstSlideIndex: number;
+  firstValue: string;
+  secondSlideIndex: number;
+  secondValue: string;
+  description: string;
+}
+
+export interface DeckQnaItem {
+  id: string;
+  question: string;
+  recommendedAnswer: string;
+  backupSlideTitle: string;
+  backupSlideBullets: string[];
+  selected: boolean;
+}
+
+export interface DeckReviewReport {
+  overallScore: number;
+  executiveSummary: string;
+  contradictions: CrossSlideContradiction[];
+  slideCritiques: { slideIndex: number; title: string; feedback: string }[];
+  toughQuestions: DeckQnaItem[];
+}
+
+export type SlideBeautifyStyle = "two_column" | "three_cards" | "align_grid";

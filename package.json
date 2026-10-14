@@ -1,6 +1,6 @@
 {
   "name": "zee-ai-ppt",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "Zee AI for PowerPoint — AI Assistant & Agent Task-Pane Add-in for Microsoft PowerPoint",
   "type": "module",

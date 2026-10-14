@@ -11,6 +11,7 @@ import {
   DialogTitle,
   Input,
   Label,
+  Select,
   Spinner,
   Textarea,
 } from "@fluentui/react-components";
@@ -19,20 +20,32 @@ import { ChatAttachment, SlideUndoSnapshot } from "../types/chat";
 import {
   ConsistencyIssue,
   DeckOutlinePlan,
+  DeckReviewReport,
+  SlideBeautifyStyle,
   TextFitIssue,
 } from "../types/ppt";
 import { ZeeSettings } from "../types/settings";
 import { fileToChatAttachment } from "./ChatInput";
 import {
   applyConsistencyFixes,
+  beautifySlideLayout,
+  buildBackupSlidesFromQna,
   buildSlidesFromApprovedOutline,
   fixTextFitIssues,
   generateDeckOutlineFromReport,
+  runManagementDeckReview,
   runPresentationConsistencyCheck,
   scanPresentationForTextFitIssues,
 } from "../services/pptFeaturesService";
+import { getActiveSlideIndex } from "../services/pptService";
 
-export type DeckToolMode = "report_to_deck" | "consistency" | "text_fit" | null;
+export type DeckToolMode =
+  | "report_to_deck"
+  | "consistency"
+  | "text_fit"
+  | "deck_review"
+  | "beautify"
+  | null;
 
 interface PowerPointDeckModalProps {
   mode: DeckToolMode;
@@ -61,6 +74,14 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
   // Text-Fit Fixer states
   const [textFitIssues, setTextFitIssues] = useState<TextFitIssue[]>([]);
   const [textFitScanned, setTextFitScanned] = useState(false);
+
+  // Management Q&A & Deck Reviewer states
+  const [reviewReport, setReviewReport] = useState<DeckReviewReport | null>(null);
+
+  // Smart Slide Layout Beautifier states
+  const [beautifySlideIdx, setBeautifySlideIdx] = useState<number>(1);
+  const [beautifyStyle, setBeautifyStyle] =
+    useState<SlideBeautifyStyle>("two_column");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -182,12 +203,70 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
     }
   };
 
+  const handleRunDeckReview = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const report = await runManagementDeckReview(settings);
+      setReviewReport(report);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleBuildBackupQna = async () => {
+    if (!reviewReport) return;
+    setBusy(true);
+    setError("");
+    try {
+      const { createdCount, undoSnapshots } = await buildBackupSlidesFromQna(
+        reviewReport.toughQuestions,
+        settings
+      );
+      onCompleted(
+        `Built ${createdCount} Backup Q&A slide(s) at the end of the presentation.`,
+        undoSnapshots
+      );
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleApplyBeautifier = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const targetIdx =
+        beautifySlideIdx > 0 ? beautifySlideIdx : await getActiveSlideIndex();
+      const { summary, undoSnapshot } = await beautifySlideLayout({
+        slideNumber: targetIdx,
+        style: beautifyStyle,
+        settings,
+      });
+      onCompleted(summary, [undoSnapshot]);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const modalTitle =
     mode === "report_to_deck"
       ? "📄 Report / PDF → Slide Deck (Outline & Approval)"
       : mode === "consistency"
         ? "✅ Presentation Consistency Checker"
-        : "📐 Slide Text-Fit Fixer";
+        : mode === "text_fit"
+          ? "📐 Slide Text-Fit Fixer"
+          : mode === "deck_review"
+            ? "🎯 Management Q&A & Deck Reviewer"
+            : "🎨 Smart Slide Layout Beautifier";
 
   return (
     <Dialog open={Boolean(mode)} onOpenChange={(_, d) => !d.open && onClose()}>
@@ -484,6 +563,165 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
               </>
             )}
 
+            {/* MODE 4: MANAGEMENT Q&A & DECK REVIEWER */}
+            {mode === "deck_review" && (
+              <>
+                <div style={{ opacity: 0.85 }}>
+                  Audits the entire presentation for cross-slide numerical contradictions (same well
+                  or metric with conflicting numbers), scores executive readiness, and generates
+                  tough Management Q&amp;A with one-click Backup Slides.
+                </div>
+
+                {!reviewReport ? (
+                  <Button
+                    appearance="primary"
+                    disabled={busy}
+                    onClick={handleRunDeckReview}
+                    style={{ backgroundColor: "#b73618", alignSelf: "flex-start" }}
+                  >
+                    🎯 Run Management &amp; Technical Audit
+                  </Button>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div
+                      style={{
+                        padding: 8,
+                        borderRadius: 6,
+                        background: "rgba(183, 54, 24, 0.08)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ fontWeight: 700 }}>
+                        Executive Readiness Score: {reviewReport.overallScore}/100
+                      </span>
+                      <Badge
+                        color={reviewReport.overallScore >= 80 ? "success" : "warning"}
+                        size="small"
+                      >
+                        {reviewReport.contradictions.length} Contradiction(s)
+                      </Badge>
+                    </div>
+
+                    <div style={{ fontSize: 11, opacity: 0.9 }}>
+                      {reviewReport.executiveSummary}
+                    </div>
+
+                    {reviewReport.contradictions.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <Label size="small" style={{ color: "#d13438", fontWeight: 700 }}>
+                          ⚠️ Cross-Slide Numerical Contradictions Found:
+                        </Label>
+                        {reviewReport.contradictions.map((c) => (
+                          <div
+                            key={c.id}
+                            style={{
+                              padding: "6px 8px",
+                              borderRadius: 6,
+                              background: "rgba(209, 52, 56, 0.08)",
+                              border: "1px solid rgba(209, 52, 56, 0.25)",
+                              fontSize: 11,
+                            }}
+                          >
+                            {c.description}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <Label size="small" style={{ fontWeight: 700, marginTop: 4 }}>
+                       Anticipated Management Q&amp;A (Select to build Backup Slides):
+                    </Label>
+                    {reviewReport.toughQuestions.map((q, idx) => (
+                      <div
+                        key={q.id}
+                        style={{
+                          border: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                          borderRadius: 6,
+                          padding: "6px 8px",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 6,
+                        }}
+                      >
+                        <Checkbox
+                          checked={q.selected}
+                          onChange={(_, d) => {
+                            const next = [...reviewReport.toughQuestions];
+                            next[idx] = { ...next[idx], selected: Boolean(d.checked) };
+                            setReviewReport({
+                              ...reviewReport,
+                              toughQuestions: next,
+                            });
+                          }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600 }}>
+                            <Badge size="small" appearance="outline" style={{ marginRight: 6 }}>
+                              {q.backupSlideTitle}
+                            </Badge>
+                            {q.question}
+                          </div>
+                          <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                            <b>Answer:</b> {q.recommendedAnswer}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* MODE 5: SMART SLIDE LAYOUT BEAUTIFIER */}
+            {mode === "beautify" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ opacity: 0.85 }}>
+                  Transforms a dense bullet slide into a clean 2-Column comparison split, a
+                  3-Card executive summary grid, or aligned company-template typography (with
+                  one-click Undo).
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <div style={{ flex: 1 }}>
+                    <Label size="small">Target Slide Number (1-based)</Label>
+                    <Input
+                      size="small"
+                      type="number"
+                      style={{ width: "100%", marginTop: 4 }}
+                      value={String(beautifySlideIdx)}
+                      onChange={(_, d) =>
+                        setBeautifySlideIdx(Math.max(1, Number(d.value) || 1))
+                      }
+                    />
+                  </div>
+                  <div style={{ flex: 2 }}>
+                    <Label size="small">Beautifier Layout Style</Label>
+                    <Select
+                      size="small"
+                      style={{ width: "100%", marginTop: 4 }}
+                      value={beautifyStyle}
+                      onChange={(_, d) =>
+                        setBeautifyStyle(d.value as SlideBeautifyStyle)
+                      }
+                    >
+                      <option value="two_column">
+                        2-Column Split (Comparison / Before vs After)
+                      </option>
+                      <option value="three_cards">
+                        3-Card Callout Grid (Key Takeaways / Pillars)
+                      </option>
+                      <option value="align_grid">
+                        Snap &amp; Align Typography to Company Template
+                      </option>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {busy && (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Spinner size="tiny" />
@@ -549,6 +787,31 @@ export const PowerPointDeckModal: React.FC<PowerPointDeckModalProps> = ({
                   ✓ Shorten &amp; Fit Selected ({textFitIssues.filter((i) => i.selected).length})
                 </Button>
               )}
+
+            {mode === "deck_review" &&
+              reviewReport &&
+              reviewReport.toughQuestions.some((q) => q.selected) && (
+                <Button
+                  appearance="primary"
+                  disabled={busy}
+                  onClick={handleBuildBackupQna}
+                  style={{ backgroundColor: "#b73618" }}
+                >
+                  ✓ Build Selected Backup Q&amp;A Slides (
+                  {reviewReport.toughQuestions.filter((q) => q.selected).length})
+                </Button>
+              )}
+
+            {mode === "beautify" && (
+              <Button
+                appearance="primary"
+                disabled={busy}
+                onClick={handleApplyBeautifier}
+                style={{ backgroundColor: "#b73618" }}
+              >
+                🎨 Apply Layout Beautifier
+              </Button>
+            )}
 
             <Button appearance="subtle" onClick={onClose}>
               Cancel
