@@ -2,10 +2,10 @@
 setlocal EnableDelayedExpansion
 title Zee AI for PowerPoint - Standalone Installer
 
-set "CATALOG_DIR=%LOCALAPPDATA%\ZeeAI\PowerPoint\Catalog"
-set "UNC_CATALOG_DIR=\\localhost\%LOCALAPPDATA::=$%\ZeeAI\PowerPoint\Catalog"
-set "CATALOG_ID={e74c89a2-5b14-4d93-8f61-9c2e3a4b5d78}"
+set "INSTALL_DIR=%LOCALAPPDATA%\ZeeAI\PowerPoint"
+set "MANIFEST_FILE=%INSTALL_DIR%\manifest.prod.xml"
 set "ADDIN_ID=e74c89a2-5b14-4d93-8f61-9c2e3a4b5d78"
+set "CATALOG_ID={e74c89a2-5b14-4d93-8f61-9c2e3a4b5d78}"
 set "MANIFEST_URL=https://zeexx99.github.io/zee-ai-ppt/manifest.xml"
 
 :MENU
@@ -30,18 +30,18 @@ goto MENU
 
 :INSTALL
 echo.
-echo [1/4] Creating local catalog folder: %CATALOG_DIR%
-if not exist "%CATALOG_DIR%" mkdir "%CATALOG_DIR%"
+echo [1/4] Creating local install folder: %INSTALL_DIR%
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
 echo [2/4] Preparing hosted manifest...
 if exist "%~dp0manifest.prod.xml" (
-  echo Using local manifest.prod.xml...
-  copy /Y "%~dp0manifest.prod.xml" "%CATALOG_DIR%\manifest.xml" >nul
+  echo Using bundled manifest.prod.xml...
+  copy /Y "%~dp0manifest.prod.xml" "%MANIFEST_FILE%" >nul
 ) else (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%MANIFEST_URL%' -OutFile '%CATALOG_DIR%\manifest.xml' -UseBasicParsing -ErrorAction Stop; Write-Host 'Downloaded latest manifest from GitHub Pages.' } catch { exit 1 }"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%MANIFEST_URL%' -OutFile '%MANIFEST_FILE%' -UseBasicParsing -ErrorAction Stop; Write-Host 'Downloaded latest manifest from GitHub Pages.' } catch { exit 1 }"
   if errorlevel 1 (
     echo Writing embedded production manifest...
-    call :WRITE_EMBEDDED_MANIFEST "%CATALOG_DIR%\manifest.xml"
+    call :WRITE_EMBEDDED_MANIFEST "%MANIFEST_FILE%"
   )
 )
 
@@ -49,14 +49,11 @@ echo [3/4] Registering Zee AI for PowerPoint in Windows Registry...
 reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v "ZeeAI-PPT" /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v "ZeeAI.PPT.Hosted" /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v "%ADDIN_ID%" /f >nul 2>&1
-reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v "%ADDIN_ID%" /t REG_SZ /d "%CATALOG_DIR%\manifest.xml" /f >nul
-reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer\%ADDIN_ID%" /v "UseDirectDebugger" /t REG_DWORD /d 1 /f >nul
-reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer\%ADDIN_ID%" /v "UseWebDebugger" /t REG_DWORD /d 0 /f >nul
-reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer\%ADDIN_ID%" /v "UseLiveReload" /t REG_DWORD /d 0 /f >nul
+reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\%CATALOG_ID%" /f >nul 2>&1
 
-reg add "HKCU\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\%CATALOG_ID%" /v "Id" /t REG_SZ /d "%CATALOG_ID%" /f >nul
-reg add "HKCU\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\%CATALOG_ID%" /v "Url" /t REG_SZ /d "%UNC_CATALOG_DIR%" /f >nul
-reg add "HKCU\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\%CATALOG_ID%" /v "Flags" /t REG_DWORD /d 1 /f >nul
+reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v "ZeeAI-PPT" /t REG_SZ /d "%MANIFEST_FILE%" /f >nul
+reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer\%ADDIN_ID%" /v "UseDirectDebugger" /t REG_DWORD /d 0 /f >nul
+reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer\%ADDIN_ID%" /v "UseWebDebugger" /t REG_DWORD /d 0 /f >nul
 
 echo [4/4] Clearing old Office WEF cache...
 if exist "%LOCALAPPDATA%\Microsoft\Office\16.0\Wef" (
@@ -67,10 +64,10 @@ echo.
 echo ============================================================
 echo   [SUCCESS] Zee AI for PowerPoint is installed!
 echo ============================================================
-echo   1. Close PowerPoint completely if it is running.
-echo   2. Open PowerPoint -^> Home -^> Add-ins -^> More Add-ins.
-echo   3. Under "My Add-ins" or "Shared Folder", select
-echo      "Zee AI for PowerPoint" and click Add.
+echo   1. Close PowerPoint completely if it is running, then reopen.
+echo   2. Click "Add-ins" on the Home tab -^> "More Add-ins".
+echo   3. Click "MY ADD-INS" at the top, scroll to "Developer Add-ins",
+echo      select "Zee AI for PowerPoint", and click "Add".
 echo   4. Click "Zee AI" on the Home tab and enter your API Key
 echo      or Team Proxy Token in Settings.
 echo ============================================================
@@ -87,9 +84,9 @@ reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v "%ADDIN_ID%" /
 reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\Developer\%ADDIN_ID%" /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\%CATALOG_ID%" /f >nul 2>&1
 
-echo [2/3] Removing local catalog folder...
-if exist "%LOCALAPPDATA%\ZeeAI\PowerPoint" (
-  rd /s /q "%LOCALAPPDATA%\ZeeAI\PowerPoint" >nul 2>&1
+echo [2/3] Removing local folder...
+if exist "%INSTALL_DIR%" (
+  rd /s /q "%INSTALL_DIR%" >nul 2>&1
 )
 
 echo [3/3] Clearing Office WEF cache...
