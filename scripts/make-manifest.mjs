@@ -29,6 +29,16 @@ function validateManifestXml(xml, label) {
   if (!/<TaskpaneId>ZeeAI\.PPT\.Taskpane<\/TaskpaneId>/.test(xml)) {
     errors.push(`${label}: TaskpaneId must be ZeeAI.PPT.Taskpane`);
   }
+
+  // Office XSD ReferenceId max length is 32 characters
+  const residRegex = /\b(?:resid|id)="([^"]+)"/g;
+  let match;
+  while ((match = residRegex.exec(xml)) !== null) {
+    if (match[1].length > 32) {
+      errors.push(`${label}: Attribute id/resid "${match[1]}" exceeds 32-char Office XSD limit (${match[1].length} chars)`);
+    }
+  }
+
   if (errors.length > 0) {
     throw new Error(errors.join("\n"));
   }

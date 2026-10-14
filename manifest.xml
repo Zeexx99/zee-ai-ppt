@@ -38,35 +38,37 @@
       <Host xsi:type="Presentation">
         <DesktopFormFactor>
           <GetStarted>
-            <Title resid="ZeeAI.PPT.GetStarted.Title"/>
-            <Description resid="ZeeAI.PPT.GetStarted.Description"/>
-            <LearnMoreUrl resid="ZeeAI.PPT.GetStarted.LearnMoreUrl"/>
+            <Title resid="ZeeAI.GetStarted.Title"/>
+            <Description resid="ZeeAI.GetStarted.Desc"/>
+            <LearnMoreUrl resid="ZeeAI.GetStarted.Url"/>
           </GetStarted>
+
+          <FunctionFile resid="ZeeAI.Taskpane.Url"/>
 
           <ExtensionPoint xsi:type="PrimaryCommandSurface">
             <OfficeTab id="TabHome">
               <Group id="ZeeAI.PPT.Group">
-                <Label resid="ZeeAI.PPT.GroupLabel"/>
+                <Label resid="ZeeAI.GroupLabel"/>
                 <Icon>
-                  <bt:Image size="16" resid="ZeeAI.PPT.Icon16"/>
-                  <bt:Image size="32" resid="ZeeAI.PPT.Icon32"/>
-                  <bt:Image size="80" resid="ZeeAI.PPT.Icon80"/>
+                  <bt:Image size="16" resid="ZeeAI.Icon16"/>
+                  <bt:Image size="32" resid="ZeeAI.Icon32"/>
+                  <bt:Image size="80" resid="ZeeAI.Icon80"/>
                 </Icon>
 
                 <Control xsi:type="Button" id="ZeeAI.PPT.OpenButton">
-                  <Label resid="ZeeAI.PPT.TaskpaneButton.Label"/>
+                  <Label resid="ZeeAI.Button.Label"/>
                   <Supertip>
-                    <Title resid="ZeeAI.PPT.TaskpaneButton.Label"/>
-                    <Description resid="ZeeAI.PPT.TaskpaneButton.Tooltip"/>
+                    <Title resid="ZeeAI.Button.Label"/>
+                    <Description resid="ZeeAI.Button.Tooltip"/>
                   </Supertip>
                   <Icon>
-                    <bt:Image size="16" resid="ZeeAI.PPT.Icon16"/>
-                    <bt:Image size="32" resid="ZeeAI.PPT.Icon32"/>
-                    <bt:Image size="80" resid="ZeeAI.PPT.Icon80"/>
+                    <bt:Image size="16" resid="ZeeAI.Icon16"/>
+                    <bt:Image size="32" resid="ZeeAI.Icon32"/>
+                    <bt:Image size="80" resid="ZeeAI.Icon80"/>
                   </Icon>
                   <Action xsi:type="ShowTaskpane">
                     <TaskpaneId>ZeeAI.PPT.Taskpane</TaskpaneId>
-                    <SourceLocation resid="ZeeAI.PPT.Taskpane.Url"/>
+                    <SourceLocation resid="ZeeAI.Taskpane.Url"/>
                   </Action>
                 </Control>
               </Group>
@@ -78,23 +80,23 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="ZeeAI.PPT.Icon16" DefaultValue="https://localhost:3300/assets/icon-16.png"/>
-        <bt:Image id="ZeeAI.PPT.Icon32" DefaultValue="https://localhost:3300/assets/icon-32.png"/>
-        <bt:Image id="ZeeAI.PPT.Icon64" DefaultValue="https://localhost:3300/assets/icon-64.png"/>
-        <bt:Image id="ZeeAI.PPT.Icon80" DefaultValue="https://localhost:3300/assets/icon-80.png"/>
+        <bt:Image id="ZeeAI.Icon16" DefaultValue="https://localhost:3300/assets/icon-16.png"/>
+        <bt:Image id="ZeeAI.Icon32" DefaultValue="https://localhost:3300/assets/icon-32.png"/>
+        <bt:Image id="ZeeAI.Icon64" DefaultValue="https://localhost:3300/assets/icon-64.png"/>
+        <bt:Image id="ZeeAI.Icon80" DefaultValue="https://localhost:3300/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="ZeeAI.PPT.GetStarted.LearnMoreUrl" DefaultValue="https://zeexx99.github.io/zee-ai-ppt/"/>
-        <bt:Url id="ZeeAI.PPT.Taskpane.Url" DefaultValue="https://localhost:3300/index.html"/>
+        <bt:Url id="ZeeAI.GetStarted.Url" DefaultValue="https://zeexx99.github.io/zee-ai-ppt/"/>
+        <bt:Url id="ZeeAI.Taskpane.Url" DefaultValue="https://localhost:3300/index.html"/>
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="ZeeAI.PPT.GetStarted.Title" DefaultValue="Zee AI for PowerPoint is ready!"/>
-        <bt:String id="ZeeAI.PPT.GroupLabel" DefaultValue="Zee AI"/>
-        <bt:String id="ZeeAI.PPT.TaskpaneButton.Label" DefaultValue="Zee AI"/>
+        <bt:String id="ZeeAI.GetStarted.Title" DefaultValue="Zee AI for PowerPoint is ready!"/>
+        <bt:String id="ZeeAI.GroupLabel" DefaultValue="Zee AI"/>
+        <bt:String id="ZeeAI.Button.Label" DefaultValue="Zee AI"/>
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="ZeeAI.PPT.GetStarted.Description" DefaultValue="Click 'Zee AI' on the Home tab to open the AI Slide Assistant and Agent."/>
-        <bt:String id="ZeeAI.PPT.TaskpaneButton.Tooltip" DefaultValue="Open Zee AI for PowerPoint (Chat, Slide Agent, Bilingual Arabic/English &amp; Petroleum Deck Tools)"/>
+        <bt:String id="ZeeAI.GetStarted.Desc" DefaultValue="Click 'Zee AI' on the Home tab to open the AI Slide Assistant and Agent."/>
+        <bt:String id="ZeeAI.Button.Tooltip" DefaultValue="Open Zee AI for PowerPoint (Chat, Slide Agent, Bilingual Arabic/English &amp; Petroleum Deck Tools)"/>
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>
