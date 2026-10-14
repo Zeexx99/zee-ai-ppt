@@ -1,122 +1,125 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import zlib from 'node:zlib';
+import { mkdirSync, writeFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const assetsDir = join(__dirname, "..", "public", "assets");
 
 function crc32(buf) {
-  let table = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let k = 0; k < 8; k++) {
-      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-    }
-    table[i] = c >>> 0;
-  }
-  let crc = 0 ^ -1;
+  let c = -1;
   for (let i = 0; i < buf.length; i++) {
-    crc = (crc >>> 8) ^ table[(crc ^ buf[i]) & 0xff];
+    c ^= buf[i];
+    for (let j = 0; j < 8; j++) {
+      c = (c >>> 1) ^ (c & 1 ? 0xedb88320 : 0);
+    }
   }
-  return (crc ^ -1) >>> 0;
+  return (c ^ -1) >>> 0;
 }
 
 function makeChunk(type, data) {
   const len = Buffer.alloc(4);
   len.writeUInt32BE(data.length, 0);
-  const typeBuf = Buffer.from(type, 'ascii');
+  const typeBuf = Buffer.from(type, "ascii");
   const crcBuf = Buffer.alloc(4);
-  const crcVal = crc32(Buffer.concat([typeBuf, data]));
-  crcBuf.writeUInt32BE(crcVal, 0);
-  return Buffer.concat([len, typeBuf, data, crcBuf]);
+  const combined = Buffer.concat([typeBuf, data]);
+  crcBuf.writeUInt32BE(crc32(combined), 0);
+  return Buffer.concat([len, combined, crcBuf]);
 }
 
 function createIconPng(size) {
-  // RGBA buffer (size x size)
-  const rawData = Buffer.alloc(size * (size * 4 + 1));
-  let offset = 0;
+  const raw = Buffer.alloc(size * (size * 4 + 1));
+  const radius = Math.max(2, Math.round(size * 0.2));
 
   for (let y = 0; y < size; y++) {
-    rawData[offset++] = 0; // Filter type 0: None
-    const ny = y / (size - 1 || 1);
-
+    const rowStart = y * (size * 4 + 1);
+    raw[rowStart] = 0; // Filter type 0 (None)
     for (let x = 0; x < size; x++) {
-      const nx = x / (size - 1 || 1);
-      const cx = nx - 0.5;
-      const cy = ny - 0.5;
-      const dist = Math.sqrt(cx * cx + cy * cy);
+      const idx = rowStart + 1 + x * 4;
 
-      // Rounded rectangle mask (radius ~ 22% of size)
-      const cornerR = 0.22;
-      const qx = Math.max(0, Math.abs(cx) - (0.5 - cornerR));
-      const qy = Math.max(0, Math.abs(cy) - (0.5 - cornerR));
-      const cornerDist = Math.sqrt(qx * qx + qy * qy);
-      const inBox = cornerDist <= cornerR;
+      // Rounded rectangle mask
+      let inside = true;
+      if (x < radius && y < radius) {
+        inside = Math.hypot(x - radius, y - radius) <= radius;
+      } else if (x >= size - radius && y < radius) {
+        inside = Math.hypot(x - (size - radius - 1), y - radius) <= radius;
+      } else if (x < radius && y >= size - radius) {
+        inside = Math.hypot(x - radius, y - (size - radius - 1)) <= radius;
+      } else if (x >= size - radius && y >= size - radius) {
+        inside = Math.hypot(x - (size - radius - 1), y - (size - radius - 1)) <= radius;
+      }
 
-      if (!inBox) {
-        rawData[offset++] = 0;
-        rawData[offset++] = 0;
-        rawData[offset++] = 0;
-        rawData[offset++] = 0;
+      if (!inside) {
+        raw[idx] = 0;
+        raw[idx + 1] = 0;
+        raw[idx + 2] = 0;
+        raw[idx + 3] = 0;
         continue;
       }
 
-      // PowerPoint deep rust/coral/amber theme (#C43E1C -> #D24726 -> #E8633A)
-      let r = Math.round(196 + ny * 35);
-      let g = Math.round(62 + nx * 30);
-      let b = Math.round(28 + (nx + ny) * 15);
-      let a = 255;
+      // PowerPoint coral-orange gradient (#D24726 -> #A92B12)
+      const t = (x + y) / (2 * size);
+      let r = Math.round(218 - t * 48);
+      let g = Math.round(75 - t * 32);
+      let b = Math.round(40 - t * 20);
 
-      // Draw stylized "Z" in white/gold
-      // Z spans nx: 0.25 to 0.75, ny: 0.25 to 0.75
-      const inTopBar = (ny >= 0.25 && ny <= 0.38 && nx >= 0.25 && nx <= 0.75);
-      const inBottomBar = (ny >= 0.62 && ny <= 0.75 && nx >= 0.25 && nx <= 0.75);
-      // Diagonal: connects (0.75, 0.35) down to (0.25, 0.65)
-      // Line equation: nx = 0.75 - (ny - 0.35) * (0.5 / 0.3) = 0.75 - (ny - 0.35) * 1.666
-      const diagCenter = 0.75 - (ny - 0.32) * (0.5 / 0.36);
-      const inDiag = (ny >= 0.32 && ny <= 0.68 && Math.abs(nx - diagCenter) <= 0.08);
+      // Draw bold white "Z" glyph in the center
+      const nx = x / size;
+      const ny = y / size;
+      const stroke = Math.max(0.11, 1.8 / size);
 
-      // Subtle AI dot/sparkle at top right (nx: 0.78, ny: 0.22)
-      const dotDist = Math.hypot(nx - 0.78, ny - 0.22);
-      const inDot = dotDist < 0.07;
+      const inTopBar = ny >= 0.24 && ny <= 0.24 + stroke && nx >= 0.24 && nx <= 0.76;
+      const inBottomBar = ny >= 0.76 - stroke && ny <= 0.76 && nx >= 0.24 && nx <= 0.76;
+      const diagY = 0.76 - ((nx - 0.24) / 0.52) * 0.52;
+      const inDiag =
+        nx >= 0.24 &&
+        nx <= 0.76 &&
+        ny >= 0.24 &&
+        ny <= 0.76 &&
+        Math.abs(ny - diagY) <= stroke * 0.72;
 
-      if (inTopBar || inBottomBar || inDiag || inDot) {
-        // Crisp white / soft gold
+      // Small AI sparkle dot at top-right
+      const inSparkle = Math.hypot(nx - 0.78, ny - 0.2) <= Math.max(0.055, 1.1 / size);
+
+      if (inTopBar || inBottomBar || inDiag) {
         r = 255;
-        g = inDot ? 230 : 255;
-        b = inDot ? 100 : 255;
+        g = 255;
+        b = 255;
+      } else if (inSparkle) {
+        r = 255;
+        g = 228;
+        b = 148;
       }
 
-      rawData[offset++] = r;
-      rawData[offset++] = g;
-      rawData[offset++] = b;
-      rawData[offset++] = a;
+      raw[idx] = r;
+      raw[idx + 1] = g;
+      raw[idx + 2] = b;
+      raw[idx + 3] = 255;
     }
   }
 
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(size, 0);
   ihdr.writeUInt32BE(size, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // color type: RGBA
-  ihdr[10] = 0; // compression
-  ihdr[11] = 0; // filter
-  ihdr[12] = 0; // interlace
+  ihdr[9] = 6; // color type RGBA
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
 
-  const ihdrChunk = makeChunk('IHDR', ihdr);
-  const idatChunk = makeChunk('IDAT', zlib.deflateSync(rawData));
-  const iendChunk = makeChunk('IEND', Buffer.alloc(0));
-
-  return Buffer.concat([signature, ihdrChunk, idatChunk, iendChunk]);
+  const compressed = deflateSync(raw);
+  return Buffer.concat([
+    signature,
+    makeChunk("IHDR", ihdr),
+    makeChunk("IDAT", compressed),
+    makeChunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
-const outDir = path.resolve('public/assets');
-if (!fs.existsSync(outDir)) {
-  fs.mkdirSync(outDir, { recursive: true });
+mkdirSync(assetsDir, { recursive: true });
+for (const size of [16, 32, 64, 80]) {
+  const filePath = join(assetsDir, `icon-${size}.png`);
+  writeFileSync(filePath, createIconPng(size));
+  console.log(`Generated ${filePath}`);
 }
-
-[16, 32, 64, 80].forEach(size => {
-  const buf = createIconPng(size);
-  const filePath = path.join(outDir, `icon-${size}.png`);
-  fs.writeFileSync(filePath, buf);
-  console.log(`Generated ${filePath} (${buf.length} bytes)`);
-});

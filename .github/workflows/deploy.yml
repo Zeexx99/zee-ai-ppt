@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-and-deploy:
@@ -21,28 +21,34 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
           cache: "npm"
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run unit tests
-        run: npm run test
+        run: npm test
 
-      - name: Build presentation add-in
+      - name: Build production bundle
         run: npm run build
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
+      - name: Generate production manifest and copy to dist
+        run: |
+          node scripts/make-manifest.mjs
+          cp manifest.prod.xml dist/manifest.xml
+          cp manifest.prod.xml dist/manifest.prod.xml
 
-      - name: Upload Pages Artifact
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: "./dist"

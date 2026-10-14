@@ -1,316 +1,876 @@
-import { AppSettings } from '../types/settings';
-import { pptService } from './pptService';
-import { arabicService } from './arabicService';
-import { geminiService } from './geminiService';
+import { ChatAttachment, SlideUndoSnapshot } from "../types/chat";
+import {
+  ConsistencyIssue,
+  DeckOutlinePlan,
+  DeckOutlineSlide,
+  ExcelResultsPayload,
+  PetroleumResultCategory,
+  SlideDetail,
+  TextFitIssue,
+} from "../types/ppt";
+import { DEFAULT_PROTECTED_TERMS, ZeeSettings } from "../types/settings";
+import {
+  buildDirectionAndLanguageInstruction,
+  containsArabic,
+  formatBilingualTextBlock,
+} from "./arabicService";
+import {
+  convertAttachmentsToGeminiParts,
+  GeminiPart,
+  generateGeminiTurn,
+} from "./geminiService";
+import {
+  addSlide,
+  captureSlideSnapshot,
+  formatSlideText,
+  insertImage,
+  insertTable,
+  insertTextBox,
+  listSlides,
+  readSlide,
+  replaceSlideText,
+  setSlideTitle,
+  writeSpeakerNotes,
+} from "./pptService";
 
-export interface DeckSlideOutline {
-  slideNumber: number;
-  title: string;
-  bulletPoints: string[];
-  notes?: string;
-  visualSuggestion?: string;
+function extractJsonBlock(rawText: string): string {
+  const fenced = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced && fenced[1]) {
+    return fenced[1].trim();
+  }
+  const firstBrace = rawText.indexOf("{");
+  const lastBrace = rawText.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return rawText.slice(firstBrace, lastBrace + 1);
+  }
+  return rawText.trim();
 }
 
-export interface DeckOutline {
-  presentationTitle: string;
-  theme: string;
-  slides: DeckSlideOutline[];
-}
+/**
+ * Step 1 of Report/PDF -> Deck:
+ * Generates a structured slide-by-slide outline for the user to inspect/edit before building slides.
+ */
+export async function generateDeckOutlineFromReport(options: {
+  reportText: string;
+  attachments?: ChatAttachment[];
+  targetSlideCount?: number;
+  settings: ZeeSettings;
+}): Promise<DeckOutlinePlan> {
+  const slideCount = Math.max(3, Math.min(15, options.targetSlideCount || 6));
+  const langRules = buildDirectionAndLanguageInstruction(options.settings);
 
-export interface ConsistencyIssue {
-  slideIndex: number;
-  type: 'casing' | 'punctuation' | 'protected_term' | 'font';
-  description: string;
-  originalText: string;
-  suggestedText: string;
-}
-
-export const pptFeaturesService = {
-  /**
-   * 1. Report or PDF -> Deck: Generates a structured presentation outline for user approval
-   */
-  async generateDeckOutline(sourceText: string, slideCount = 5, settings: AppSettings): Promise<DeckOutline> {
-    const protectedTermsPrompt = arabicService.buildProtectedTermsPrompt(settings.protectedTerms);
-    const bilingualPrompt = arabicService.buildBilingualInstruction(settings.bilingualMode);
-
-    const prompt = `Analyze the following report/document and create a high-impact presentation outline with exactly ${slideCount} slides.
-
-DOCUMENT CONTENT:
-"""
-${sourceText.substring(0, 10000)}
-"""
-
-REQUIREMENTS:
-1. Create a clear, engaging presentation title.
-2. For each slide provide:
-   - slideNumber (1 to ${slideCount})
-   - title (concise, action-oriented)
-   - bulletPoints (3-4 crisp, informative bullet points)
-   - notes (professional speaker notes for the presenter)
-   - visualSuggestion (a brief idea for a chart, diagram, or table)
-3. Return ONLY a valid JSON object matching this schema without markdown code blocks:
-{
-  "presentationTitle": "string",
-  "theme": "string",
+  const prompt = [
+    `You are transforming an engineering/business report or attached PDF into a ${slideCount}-slide PowerPoint presentation outline.`,
+    langRules,
+    "Return ONLY valid JSON matching this schema:",
+    `{
+  "deckTitle": "string",
+  "deckSubtitle": "string",
+  "sourceSummary": "1-2 sentence executive overview",
   "slides": [
     {
       "slideNumber": 1,
-      "title": "string",
-      "bulletPoints": ["string"],
-      "notes": "string",
-      "visualSuggestion": "string"
+      "title": "Slide title",
+      "titleArabic": "Optional Arabic title when Bilingual mode is enabled",
+      "layout": "Title Slide | Title and Content | Two Content | Section Header | Summary Table",
+      "bullets": ["Concise bullet 1", "Concise bullet 2"],
+      "bulletsArabic": ["Optional Arabic bullet 1"],
+      "table": { "headers": ["Col1", "Col2"], "rows": [["Val1", "Val2"]] },
+      "speakerNotes": "Speaker notes for this slide"
     }
   ]
+}`,
+    options.reportText.trim()
+      ? `\nSOURCE REPORT TEXT:\n${options.reportText.trim()}`
+      : "\nAnalyze the attached PDF/document to build the slide outline.",
+  ].join("\n");
+
+  const parts: GeminiPart[] = [
+    ...convertAttachmentsToGeminiParts(options.attachments || []),
+    { text: prompt },
+  ];
+
+  const res = await generateGeminiTurn(
+    options.settings,
+    [{ role: "user", parts }],
+    {
+      systemInstruction:
+        "You are Zee AI for PowerPoint. Output strictly valid JSON for the slide deck outline.",
+    }
+  );
+
+  try {
+    const jsonStr = extractJsonBlock(res.text);
+    const parsed = JSON.parse(jsonStr) as DeckOutlinePlan;
+    if (Array.isArray(parsed.slides) && parsed.slides.length > 0) {
+      return {
+        deckTitle: parsed.deckTitle || "Generated Presentation",
+        deckSubtitle: parsed.deckSubtitle || "",
+        sourceSummary: parsed.sourceSummary || "",
+        slides: parsed.slides.map((s, idx) => ({
+          slideNumber: idx + 1,
+          title: s.title || `Slide ${idx + 1}`,
+          titleArabic: s.titleArabic,
+          layout: s.layout || "Title and Content",
+          bullets: Array.isArray(s.bullets) ? s.bullets.map(String) : [],
+          bulletsArabic: Array.isArray(s.bulletsArabic)
+            ? s.bulletsArabic.map(String)
+            : undefined,
+          table:
+            s.table && Array.isArray(s.table.headers) && Array.isArray(s.table.rows)
+              ? s.table
+              : undefined,
+          speakerNotes: s.speakerNotes || "",
+        })),
+      };
+    }
+  } catch {
+    // Fallback outline parsing if model returned markdown bullets instead of pure JSON
+  }
+
+  return buildFallbackOutlineFromText(options.reportText || res.text, options.settings);
 }
 
-${protectedTermsPrompt}
-${bilingualPrompt}`;
+export function buildFallbackOutlineFromText(
+  rawText: string,
+  settings: ZeeSettings
+): DeckOutlinePlan {
+  const paragraphs = rawText
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
 
-    let jsonResponse = '';
-    for await (const chunk of geminiService.streamChat({
-      messages: [{ role: 'user', content: prompt }],
-      settings
-    })) {
-      if (chunk.textDelta) {
-        jsonResponse += chunk.textDelta;
-      }
-    }
+  const firstLine = (paragraphs[0] || "Engineering Report Presentation")
+    .split(/\r?\n/)[0]
+    .replace(/^#+\s*/, "")
+    .slice(0, 90);
 
-    const cleanJson = jsonResponse
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/```$/i, '')
-      .trim();
+  const slides: DeckOutlineSlide[] = [
+    {
+      slideNumber: 1,
+      title: firstLine || "Executive Summary",
+      layout: "Title Slide",
+      bullets: [
+        "Generated by Zee AI for PowerPoint",
+        settings.companyTemplate?.enabled
+          ? settings.companyTemplate.footerText
+          : "Key Highlights & Technical Findings",
+      ],
+      speakerNotes: "Opening title slide introducing the report scope and objectives.",
+    },
+  ];
 
-    try {
-      const parsed = JSON.parse(cleanJson);
-      return parsed as DeckOutline;
-    } catch {
-      throw new Error('Failed to parse generated presentation outline. Please try again.');
-    }
-  },
+  const chunks = paragraphs.slice(0, 6);
+  chunks.forEach((chunk, idx) => {
+    const lines = chunk
+      .split(/\r?\n/)
+      .map((l) => l.replace(/^[-*•#]+\s*/, "").trim())
+      .filter(Boolean);
+    const title = lines[0]?.slice(0, 80) || `Key Findings — Section ${idx + 1}`;
+    const bullets =
+      lines.length > 1
+        ? lines.slice(1, 6)
+        : [chunk.slice(0, 140)];
+    slides.push({
+      slideNumber: slides.length + 1,
+      title,
+      layout: "Title and Content",
+      bullets,
+      speakerNotes: `Discuss key metrics and engineering takeaways for ${title}.`,
+    });
+  });
 
-  /**
-   * Builds slides into the presentation from an approved DeckOutline
-   */
-  async buildDeckFromOutline(
-    outline: DeckOutline,
-    onProgress?: (current: number, total: number, title: string) => void
-  ): Promise<{ createdCount: number }> {
-    let created = 0;
-    const total = outline.slides.length;
+  return {
+    deckTitle: firstLine,
+    sourceSummary: `Structured ${slides.length}-slide deck outline generated from report.`,
+    slides,
+  };
+}
 
-    for (const slideData of outline.slides) {
-      if (onProgress) {
-        onProgress(slideData.slideNumber, total, slideData.title);
-      }
+/**
+ * Step 2 of Report/PDF -> Deck:
+ * Builds the slides in PowerPoint after the user approves the outline.
+ */
+export async function buildSlidesFromApprovedOutline(
+  plan: DeckOutlinePlan,
+  settings: ZeeSettings,
+  onProgress?: (current: number, total: number, slideTitle: string) => void
+): Promise<{ createdCount: number; undoSnapshots: SlideUndoSnapshot[] }> {
+  const undoSnapshots: SlideUndoSnapshot[] = [];
+  const total = plan.slides.length;
 
-      const res = await pptService.addSlide({
-        title: slideData.title,
-        bullets: slideData.bulletPoints
-      });
+  for (let i = 0; i < total; i++) {
+    const item = plan.slides[i];
+    onProgress?.(i + 1, total, item.title);
 
-      if (slideData.notes) {
-        try {
-          await pptService.writeSpeakerNotes(res.slideIndex, slideData.notes);
-        } catch {
-          // ignore if notes not supported on this PowerPoint version
-        }
-      }
+    const effectiveTitle =
+      settings.bilingualMode && item.titleArabic
+        ? `${item.title} / ${item.titleArabic}`
+        : item.title;
 
-      created++;
-    }
+    const enBullets = (item.bullets || []).map((b) => (b.startsWith("•") ? b : `• ${b}`)).join("\n");
+    const arBullets =
+      settings.bilingualMode && item.bulletsArabic?.length
+        ? item.bulletsArabic.map((b) => (b.startsWith("•") ? b : `• ${b}`)).join("\n")
+        : "";
 
-    return { createdCount: created };
-  },
+    const bodyText = arBullets
+      ? formatBilingualTextBlock(enBullets, arBullets)
+      : enBullets;
 
-  /**
-   * 2. Excel Results -> Results Slide: formats pasted data/metrics into an executive results slide
-   */
-  async buildResultsSlideFromData(rawData: string, settings: AppSettings): Promise<{ slideIndex: number }> {
-    const prompt = `Convert the following petroleum/engineering test data or spreadsheet extract into a structured executive summary slide.
-
-RAW DATA:
-"""
-${rawData.substring(0, 5000)}
-"""
-
-REQUIREMENTS:
-1. Provide a concise, professional slide title summarizing the test/well/asset.
-2. Provide 3-4 bullet points highlighting key findings, anomalies, and operational recommendations.
-3. Provide a summary table: 3-5 rows, 2-3 columns (e.g. Metric | Value | Status or Baseline).
-4. Return ONLY a valid JSON object matching:
-{
-  "title": "string",
-  "bullets": ["string"],
-  "table": {
-    "headers": ["Metric", "Value", "Status/Benchmark"],
-    "rows": [["string", "string", "string"]]
-  },
-  "speakerNotes": "string"
-}`;
-
-    let jsonResponse = '';
-    for await (const chunk of geminiService.streamChat({
-      messages: [{ role: 'user', content: prompt }],
-      settings
-    })) {
-      if (chunk.textDelta) {
-        jsonResponse += chunk.textDelta;
-      }
-    }
-
-    const cleanJson = jsonResponse
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/```$/i, '')
-      .trim();
-
-    const parsed = JSON.parse(cleanJson);
-
-    // Create the slide
-    const slide = await pptService.addSlide({
-      title: parsed.title,
-      bullets: parsed.bullets
+    const added = await addSlide({
+      title: effectiveTitle,
+      bodyText,
+      layoutName: settings.companyTemplate?.enabled
+        ? settings.companyTemplate.layoutName
+        : item.layout,
+      notes: item.speakerNotes,
+      settings,
     });
 
-    // Add table if supported
-    const status = pptService.getRequirementStatus();
-    if (status.canAddTables && parsed.table && parsed.table.rows?.length > 0) {
-      try {
-        await pptService.insertTable(slide.slideIndex, {
-          rows: parsed.table.rows.length + 1,
-          columns: parsed.table.headers.length,
-          headers: parsed.table.headers,
-          data: parsed.table.rows
+    if (item.table && item.table.headers.length > 0 && item.table.rows.length > 0) {
+      await insertTable({
+        slideNumber: added.slideIndex,
+        headers: item.table.headers,
+        rows: item.table.rows,
+        top: bodyText ? 260 : 120,
+        height: 190,
+        settings,
+      });
+    }
+
+    undoSnapshots.push({
+      stepId: `deck-build-${Date.now()}-${i}`,
+      toolName: "addSlide",
+      timestamp: Date.now(),
+      slideIndex: added.slideIndex,
+      createdSlideId: added.slideId,
+      actionType: "add_slide",
+    });
+  }
+
+  return { createdCount: total, undoSnapshots };
+}
+
+/**
+ * Parses raw TSV/CSV/Markdown or unstructured Excel engineering results into
+ * a structured ExcelResultsPayload (with AI enrichment when API is configured).
+ */
+export function parseTabularText(rawText: string): {
+  headers: string[];
+  rows: string[][];
+} {
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^[-|:\s]+$/.test(l));
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.includes("\t")) {
+      const tableLines = lines.slice(i).filter((l) => l.includes("\t"));
+      if (tableLines.length >= 2) {
+        const splitRow = (r: string) => r.split("\t").map((c) => c.trim());
+        return {
+          headers: splitRow(tableLines[0]),
+          rows: tableLines.slice(1, 12).map(splitRow),
+        };
+      }
+    }
+    if (line.includes("|")) {
+      const tableLines = lines.slice(i).filter((l) => l.includes("|"));
+      if (tableLines.length >= 2) {
+        const splitPipe = (r: string) =>
+          r
+            .replace(/^\||\|$/g, "")
+            .split("|")
+            .map((c) => c.trim());
+        return {
+          headers: splitPipe(tableLines[0]),
+          rows: tableLines.slice(1, 12).map(splitPipe),
+        };
+      }
+    }
+    if (line.includes(",") && line.split(",").length >= 3) {
+      const tableLines = lines.slice(i).filter((l) => l.includes(","));
+      if (tableLines.length >= 2) {
+        const splitCsv = (r: string) => r.split(",").map((c) => c.trim());
+        return {
+          headers: splitCsv(tableLines[0]),
+          rows: tableLines.slice(1, 12).map(splitCsv),
+        };
+      }
+    }
+  }
+
+  // Default summary rows based on key: value pairs
+  const kvRows: string[][] = [];
+  for (const line of lines) {
+    const m = line.match(/^([^:=]{2,40})[:=]\s*(.+)$/);
+    if (m) {
+      kvRows.push([m[1].trim(), m[2].trim()]);
+    }
+  }
+
+  if (kvRows.length > 0) {
+    return {
+      headers: ["Parameter", "Value"],
+      rows: kvRows.slice(0, 10),
+    };
+  }
+
+  return {
+    headers: ["Metric", "Observation"],
+    rows: lines.slice(0, 6).map((l, idx) => [`Item ${idx + 1}`, l]),
+  };
+}
+
+export async function prepareExcelResultsSlidePayload(options: {
+  category: PetroleumResultCategory;
+  wellOrFieldName: string;
+  rawInputText: string;
+  chartImageBase64?: string;
+  settings: ZeeSettings;
+}): Promise<ExcelResultsPayload> {
+  const categoryLabels: Record<PetroleumResultCategory, string> = {
+    decline_curve: "Decline Curve Analysis (Arps Forecast)",
+    esp_analysis: "ESP Performance & Hydraulic Diagnosis",
+    production_qc: "Production Surveillance & QC Summary",
+    custom: "Engineering Results Summary",
+  };
+
+  const parsedTable = parseTabularText(options.rawInputText);
+  const wellLabel = options.wellOrFieldName.trim() || "Field / Well Review";
+  const defaultTitle = `${wellLabel} — ${categoryLabels[options.category]}`;
+
+  try {
+    const prompt = [
+      `Convert the following Zee AI Excel ${categoryLabels[options.category]} results for "${wellLabel}" into a PowerPoint Results Slide JSON payload.`,
+      buildDirectionAndLanguageInstruction(options.settings),
+      "Return ONLY valid JSON with this structure:",
+      `{
+  "slideTitle": "string",
+  "kpis": [{ "label": "e.g. PIP", "value": "1,120 psi", "status": "normal" }],
+  "headers": ["Col 1", "Col 2"],
+  "rows": [["Val 1", "Val 2"]],
+  "takeaways": ["Key engineering takeaway 1", "Key engineering takeaway 2"],
+  "speakerNotes": "Concise presenter talking points"
+}`,
+      `RAW EXCEL RESULTS:\n${options.rawInputText}`,
+    ].join("\n\n");
+
+    const parts: GeminiPart[] = [];
+    if (options.chartImageBase64) {
+      parts.push({
+        inlineData: {
+          mimeType: "image/png",
+          data: options.chartImageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, ""),
+        },
+      });
+    }
+    parts.push({ text: prompt });
+
+    const res = await generateGeminiTurn(options.settings, [{ role: "user", parts }]);
+    const json = JSON.parse(extractJsonBlock(res.text));
+
+    return {
+      category: options.category,
+      wellOrFieldName: wellLabel,
+      rawInputText: options.rawInputText,
+      slideTitle: json.slideTitle || defaultTitle,
+      kpis: Array.isArray(json.kpis) ? json.kpis.slice(0, 4) : [],
+      headers:
+        Array.isArray(json.headers) && json.headers.length > 0
+          ? json.headers.map(String)
+          : parsedTable.headers,
+      rows:
+        Array.isArray(json.rows) && json.rows.length > 0
+          ? json.rows
+          : parsedTable.rows,
+      takeaways: Array.isArray(json.takeaways)
+        ? json.takeaways.map(String)
+        : ["Verified engineering metrics and operational limits."],
+      speakerNotes:
+        json.speakerNotes ||
+        `Present ${categoryLabels[options.category]} findings for ${wellLabel}.`,
+      chartImageBase64: options.chartImageBase64,
+    };
+  } catch {
+    return {
+      category: options.category,
+      wellOrFieldName: wellLabel,
+      rawInputText: options.rawInputText,
+      slideTitle: defaultTitle,
+      kpis: parsedTable.rows.slice(0, 3).map((r) => ({
+        label: r[0] || "Metric",
+        value: r[1] || "",
+        status: "normal",
+      })),
+      headers: parsedTable.headers,
+      rows: parsedTable.rows,
+      takeaways: [
+        `Reviewed ${categoryLabels[options.category]} results for ${wellLabel}.`,
+        "All protected engineering parameters (ESP, TDH, PIP, GOR, BHP, bbl/d) preserved.",
+      ],
+      speakerNotes: `Walk through the ${categoryLabels[options.category]} table and key takeaways for ${wellLabel}.`,
+      chartImageBase64: options.chartImageBase64,
+    };
+  }
+}
+
+export async function buildExcelResultsSlide(
+  payload: ExcelResultsPayload,
+  settings: ZeeSettings
+): Promise<{ slideIndex: number; slideId: string; undoSnapshot: SlideUndoSnapshot }> {
+  const kpiLine =
+    payload.kpis.length > 0
+      ? "KPIs: " + payload.kpis.map((k) => `${k.label}: ${k.value}`).join("  |  ")
+      : "";
+
+  const takeawayLines = payload.takeaways
+    .map((t) => (t.startsWith("•") ? t : `• ${t}`))
+    .join("\n");
+
+  const bodyBlock = [kpiLine, takeawayLines].filter(Boolean).join("\n\n");
+
+  const added = await addSlide({
+    title: payload.slideTitle,
+    bodyText: bodyBlock,
+    layoutName: settings.companyTemplate?.enabled
+      ? settings.companyTemplate.layoutName
+      : "Two Content",
+    notes: payload.speakerNotes,
+    settings,
+  });
+
+  if (payload.headers.length > 0 && payload.rows.length > 0) {
+    await insertTable({
+      slideNumber: added.slideIndex,
+      title: `${payload.wellOrFieldName} Data`,
+      headers: payload.headers,
+      rows: payload.rows,
+      left: 48,
+      top: 250,
+      width: payload.chartImageBase64 ? 320 : 624,
+      height: 210,
+      settings,
+    });
+  }
+
+  if (payload.chartImageBase64) {
+    try {
+      await insertImage({
+        slideNumber: added.slideIndex,
+        base64Data: payload.chartImageBase64,
+        left: 384,
+        top: 120,
+        width: 288,
+        height: 210,
+      });
+    } catch {
+      // Ignore if image insertion is unsupported on older host
+    }
+  }
+
+  return {
+    slideIndex: added.slideIndex,
+    slideId: added.slideId,
+    undoSnapshot: {
+      stepId: `excel-slide-${Date.now()}`,
+      toolName: "addSlide",
+      timestamp: Date.now(),
+      slideIndex: added.slideIndex,
+      createdSlideId: added.slideId,
+      actionType: "add_slide",
+    },
+  };
+}
+
+/**
+ * Scans all slides in the presentation for consistency issues:
+ * - Font families (vs dominant or Company Template font)
+ * - Font sizes
+ * - Title capitalization / trailing periods
+ * - Unit formatting & Protected terms casing (ESP, TDH, PIP, GOR, BHP, bbl/d, etc.)
+ */
+export function analyzeSlidesConsistency(
+  slides: SlideDetail[],
+  settings: ZeeSettings
+): ConsistencyIssue[] {
+  const issues: ConsistencyIssue[] = [];
+
+  // Determine expected fonts
+  const fontCounts = new Map<string, number>();
+  for (const sl of slides) {
+    for (const sh of sl.shapes) {
+      if (sh.fontName && !sh.isTitle) {
+        fontCounts.set(sh.fontName, (fontCounts.get(sh.fontName) || 0) + 1);
+      }
+    }
+  }
+
+  let dominantBodyFont = "Calibri";
+  let maxCount = 0;
+  for (const [font, cnt] of fontCounts.entries()) {
+    if (cnt > maxCount) {
+      maxCount = cnt;
+      dominantBodyFont = font;
+    }
+  }
+
+  const expectedBodyFont = settings.companyTemplate?.enabled
+    ? settings.companyTemplate.bodyFont
+    : dominantBodyFont;
+  const expectedHeadingFont = settings.companyTemplate?.enabled
+    ? settings.companyTemplate.headingFont
+    : "Calibri Light";
+
+  const uppercaseTerms = DEFAULT_PROTECTED_TERMS.filter((t) => /^[A-Z&]{2,6}$/.test(t));
+
+  const unitTypos: { pattern: RegExp; canonical: string; label: string }[] = [
+    { pattern: /\b(?:bbld|bbls\/d|bbl\/day|bbls\/day)\b/gi, canonical: "bbl/d", label: "bbl/d" },
+    { pattern: /\b(?:stbd|stbs\/d|stb\/day)\b/gi, canonical: "stb/d", label: "stb/d" },
+    { pattern: /\b(?:scfstb|scf\/bbl)\b/gi, canonical: "scf/stb", label: "scf/stb" },
+    { pattern: /\b(?:mscfd|mscf\/day)\b/gi, canonical: "MSCF/d", label: "MSCF/d" },
+    { pattern: /\b(?:mmscfd|mmscf\/day)\b/gi, canonical: "MMSCF/d", label: "MMSCF/d" },
+  ];
+
+  for (const sl of slides) {
+    // 1. Check slide title punctuation / capitalization
+    if (sl.title && sl.title.endsWith(".")) {
+      issues.push({
+        id: `issue-title-period-${sl.index}`,
+        slideIndex: sl.index,
+        slideId: sl.id,
+        category: "title_case",
+        severity: "info",
+        description: `Slide ${sl.index} title ends with a trailing period.`,
+        currentValue: sl.title,
+        suggestedValue: sl.title.replace(/\.+$/, ""),
+        selected: true,
+      });
+    }
+
+    for (const sh of sl.shapes) {
+      const text = (sh.text || "").trim();
+      if (!text) continue;
+
+      // 2. Font family check
+      const isArabicShape = containsArabic(text);
+      const targetFont = isArabicShape && settings.arabicFont !== "Same as document"
+        ? settings.arabicFont
+        : sh.isTitle
+          ? expectedHeadingFont
+          : expectedBodyFont;
+
+      if (sh.fontName && targetFont && sh.fontName.toLowerCase() !== targetFont.toLowerCase()) {
+        issues.push({
+          id: `issue-font-${sl.index}-${sh.id}`,
+          slideIndex: sl.index,
+          slideId: sl.id,
+          shapeId: sh.id,
+          category: "font_family",
+          severity: "warning",
+          description: `Slide ${sl.index} (${sh.name}): uses font "${sh.fontName}" instead of "${targetFont}".`,
+          currentValue: sh.fontName,
+          suggestedValue: targetFont,
+          selected: true,
         });
-      } catch (e) {
-        console.warn('Could not insert table on results slide:', e);
       }
-    }
 
-    // Add speaker notes if supported
-    if (status.canManageNotes && parsed.speakerNotes) {
-      try {
-        await pptService.writeSpeakerNotes(slide.slideIndex, parsed.speakerNotes);
-      } catch {
-        // ignore
+      // 3. Font size check
+      if (!sh.isTitle && sh.fontSize && (sh.fontSize < 12 || sh.fontSize > 26)) {
+        const suggested = sh.fontSize < 12 ? "14" : "18";
+        issues.push({
+          id: `issue-size-${sl.index}-${sh.id}`,
+          slideIndex: sl.index,
+          slideId: sl.id,
+          shapeId: sh.id,
+          category: "font_size",
+          severity: "info",
+          description: `Slide ${sl.index} (${sh.name}): body font size is ${sh.fontSize}pt.`,
+          currentValue: `${sh.fontSize}`,
+          suggestedValue: suggested,
+          selected: false,
+        });
       }
-    }
 
-    return { slideIndex: slide.slideIndex };
-  },
-
-  /**
-   * 3. Speaker Notes Generator: writes professional notes for active slide
-   */
-  async generateSpeakerNotesForSlide(slideIndex: number, settings: AppSettings): Promise<string> {
-    const slide = await pptService.readSlide(slideIndex);
-    if (!slide.title && slide.bullets.length === 0) {
-      throw new Error(`Slide ${slideIndex} has no text content to generate speaker notes from.`);
-    }
-
-    const prompt = `You are an executive speech coach. Write natural, conversational, professional speaker notes for the following slide:
-
-SLIDE TITLE: ${slide.title}
-SLIDE BULLETS:
-${slide.bullets.join('\n')}
-
-GUIDELINES:
-- Provide what the presenter should say to expand on the bullets, provide context, and transition smoothly.
-- Do not repeat the bullet points verbatim.
-- Keep it under 150 words.`;
-
-    let notes = '';
-    for await (const chunk of geminiService.streamChat({
-      messages: [{ role: 'user', content: prompt }],
-      settings
-    })) {
-      if (chunk.textDelta) {
-        notes += chunk.textDelta;
-      }
-    }
-
-    // Save to slide
-    await pptService.writeSpeakerNotes(slideIndex, notes.trim());
-    return notes.trim();
-  },
-
-  /**
-   * 4. Consistency Checker: Audits slides for fonts, casing, units, and protected terms
-   */
-  async checkDeckConsistency(settings: AppSettings): Promise<ConsistencyIssue[]> {
-    const overview = await pptService.getPresentationOverview();
-    const issues: ConsistencyIssue[] = [];
-
-    for (let i = 1; i <= overview.slideCount; i++) {
-      const slide = await pptService.readSlide(i);
-
-      // Check protected terms casing
-      for (const term of settings.protectedTerms) {
-        const regex = new RegExp(`\\b${term}\\b`, 'i');
-        const exactRegex = new RegExp(`\\b${term}\\b`);
-        for (const bullet of slide.bullets) {
-          if (regex.test(bullet) && !exactRegex.test(bullet)) {
+      // 4. Protected acronym casing check (e.g., "esp" or "tdh" written in lowercase)
+      for (const term of uppercaseTerms) {
+        const regex = new RegExp(`\\b${term}\\b`, "gi");
+        let match: RegExpExecArray | null;
+        while ((match = regex.exec(text)) !== null) {
+          const found = match[0];
+          if (found !== term && found.toLowerCase() === term.toLowerCase()) {
+            // Avoid flagging common English words "pi" or "wc" unless uppercase is expected
+            if ((term === "PI" || term === "WC") && found === found.toLowerCase()) continue;
             issues.push({
-              slideIndex: i,
-              type: 'protected_term',
-              description: `Protected term "${term}" has incorrect casing in slide ${i}.`,
-              originalText: bullet,
-              suggestedText: bullet.replace(regex, term)
+              id: `issue-term-${sl.index}-${sh.id}-${term}`,
+              slideIndex: sl.index,
+              slideId: sl.id,
+              shapeId: sh.id,
+              category: "protected_term",
+              severity: "warning",
+              description: `Slide ${sl.index}: protected term "${found}" should be "${term}".`,
+              currentValue: found,
+              suggestedValue: term,
+              selected: true,
             });
+            break;
           }
         }
       }
 
-      // Check bullet punctuation consistency (ending period)
-      if (slide.bullets.length >= 2) {
-        const withPeriod = slide.bullets.filter(b => b.trim().endsWith('.')).length;
-        const withoutPeriod = slide.bullets.length - withPeriod;
-        if (withPeriod > 0 && withoutPeriod > 0) {
+      // 5. Engineering unit standardization check
+      for (const u of unitTypos) {
+        const match = text.match(u.pattern);
+        if (match && match[0] !== u.canonical) {
           issues.push({
-            slideIndex: i,
-            type: 'punctuation',
-            description: `Mixed punctuation in bullet list on slide ${i} (${withPeriod} end with '.', ${withoutPeriod} do not).`,
-            originalText: slide.bullets[0],
-            suggestedText: 'Standardize all bullet points to omit trailing periods.'
+            id: `issue-unit-${sl.index}-${sh.id}-${u.label}`,
+            slideIndex: sl.index,
+            slideId: sl.id,
+            shapeId: sh.id,
+            category: "units",
+            severity: "warning",
+            description: `Slide ${sl.index}: non-standard unit "${match[0]}" → "${u.canonical}".`,
+            currentValue: match[0],
+            suggestedValue: u.canonical,
+            selected: true,
           });
         }
       }
     }
+  }
 
-    return issues;
-  },
+  return issues;
+}
 
-  /**
-   * 5. Text-Fit Fixer: Intelligently shortens bullet points that overflow
-   */
-  async shortenSlideText(slideIndex: number, settings: AppSettings): Promise<{ shortenedText: string }> {
-    const slide = await pptService.readSlide(slideIndex);
-    if (!slide.bullets || slide.bullets.length === 0) {
-      throw new Error(`Slide ${slideIndex} does not contain bullet points to shorten.`);
+export async function runPresentationConsistencyCheck(
+  settings: ZeeSettings
+): Promise<ConsistencyIssue[]> {
+  const summaries = await listSlides();
+  const details: SlideDetail[] = [];
+  for (const s of summaries) {
+    details.push(await readSlide(s.index));
+  }
+  return analyzeSlidesConsistency(details, settings);
+}
+
+export async function applyConsistencyFixes(
+  issues: ConsistencyIssue[],
+  settings: ZeeSettings
+): Promise<{ fixedCount: number; undoSnapshots: SlideUndoSnapshot[] }> {
+  const selected = issues.filter((i) => i.selected);
+  const snapshotsBySlide = new Map<number, SlideUndoSnapshot>();
+  let fixedCount = 0;
+
+  for (const issue of selected) {
+    if (!snapshotsBySlide.has(issue.slideIndex)) {
+      const snap = await captureSlideSnapshot(
+        `consistency-${issue.id}`,
+        "consistencyFix",
+        issue.slideIndex,
+        "modify"
+      );
+      snapshotsBySlide.set(issue.slideIndex, snap);
     }
 
-    const prompt = `Condense the following slide bullet points by 30-40% so they fit comfortably on the slide without shrinking the font size.
+    if (issue.category === "title_case") {
+      await setSlideTitle(issue.slideIndex, issue.suggestedValue, settings);
+      fixedCount += 1;
+    } else if (issue.category === "font_family") {
+      await formatSlideText({
+        slideNumber: issue.slideIndex,
+        shapeId: issue.shapeId,
+        fontName: issue.suggestedValue,
+        settings,
+      });
+      fixedCount += 1;
+    } else if (issue.category === "font_size") {
+      await formatSlideText({
+        slideNumber: issue.slideIndex,
+        shapeId: issue.shapeId,
+        fontSize: Number(issue.suggestedValue) || 16,
+        settings,
+      });
+      fixedCount += 1;
+    } else if (issue.category === "protected_term" || issue.category === "units") {
+      await replaceSlideText({
+        slideNumber: issue.slideIndex,
+        findText: issue.currentValue,
+        replaceWith: issue.suggestedValue,
+        matchCase: true,
+        respectProtectedTerms: false,
+        settings,
+      });
+      fixedCount += 1;
+    }
+  }
 
-BULLET POINTS:
-${slide.bullets.join('\n')}
+  return {
+    fixedCount,
+    undoSnapshots: Array.from(snapshotsBySlide.values()),
+  };
+}
 
-RULES:
-1. Retain all technical parameters, metrics, numbers, and protected terms.
-2. Remove filler words, redundant phrases, and narrative fluff.
-3. Return the shortened bullets as a bulleted list starting with •.`;
+/**
+ * Scans slides for text boxes / placeholders whose text overflows the box dimensions.
+ */
+export function detectTextFitIssuesInSlides(slides: SlideDetail[]): TextFitIssue[] {
+  const issues: TextFitIssue[] = [];
 
-    let condensed = '';
-    for await (const chunk of geminiService.streamChat({
-      messages: [{ role: 'user', content: prompt }],
-      settings
-    })) {
-      if (chunk.textDelta) {
-        condensed += chunk.textDelta;
+  for (const sl of slides) {
+    for (const sh of sl.shapes) {
+      if (sh.isTitle) continue;
+      const text = (sh.text || "").trim();
+      if (!text) continue;
+
+      const fontSize = sh.fontSize || 18;
+      const boxWidth = Math.max(180, sh.width || 600);
+      const boxHeight = Math.max(80, sh.height || 280);
+
+      const charsPerLine = Math.max(25, Math.floor(boxWidth / (fontSize * 0.52)));
+      const rawLines = text.split(/\r?\n/);
+      let estimatedLines = 0;
+      for (const l of rawLines) {
+        estimatedLines += Math.max(1, Math.ceil(l.length / charsPerLine));
+      }
+
+      const lineHeightPt = fontSize * 1.38;
+      const maxLinesInBox = Math.max(3, Math.floor(boxHeight / lineHeightPt));
+      const wordCount = text.split(/\s+/).filter(Boolean).length;
+
+      const overflowRatio = Number((estimatedLines / maxLinesInBox).toFixed(2));
+      if (overflowRatio > 1.05 || wordCount > 85 || rawLines.length > 8) {
+        const recFontSize = Math.max(13, Math.min(fontSize, Math.floor(fontSize / Math.sqrt(Math.max(1.1, overflowRatio)))));
+        issues.push({
+          id: `fit-${sl.index}-${sh.id}`,
+          slideIndex: sl.index,
+          slideId: sl.id,
+          shapeId: sh.id,
+          shapeName: sh.name,
+          originalText: text,
+          lineCount: estimatedLines,
+          wordCount,
+          boxHeightPt: boxHeight,
+          estimatedOverflowRatio: Math.max(overflowRatio, Number((wordCount / 75).toFixed(2))),
+          recommendedFontSize: recFontSize,
+          selected: true,
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
+export async function scanPresentationForTextFitIssues(): Promise<TextFitIssue[]> {
+  const summaries = await listSlides();
+  const details: SlideDetail[] = [];
+  for (const s of summaries) {
+    details.push(await readSlide(s.index));
+  }
+  return detectTextFitIssuesInSlides(details);
+}
+
+export async function fixTextFitIssues(
+  issues: TextFitIssue[],
+  settings: ZeeSettings
+): Promise<{ fixedCount: number; undoSnapshots: SlideUndoSnapshot[] }> {
+  const selected = issues.filter((i) => i.selected);
+  const snapshots: SlideUndoSnapshot[] = [];
+  let fixedCount = 0;
+
+  for (const item of selected) {
+    const snap = await captureSlideSnapshot(
+      `textfit-${item.id}`,
+      "textFitFix",
+      item.slideIndex,
+      "modify"
+    );
+    snapshots.push(snap);
+
+    let shortened = item.shortenedText;
+    if (!shortened) {
+      try {
+        const prompt = [
+          "Shorten these overflowing PowerPoint bullets so they fit cleanly on a single slide (max 5 bullets, max 12 words per bullet).",
+          buildDirectionAndLanguageInstruction(settings),
+          "Return ONLY the shortened bullet points (no preamble).",
+          `\nORIGINAL TEXT:\n${item.originalText}`,
+        ].join("\n");
+        const res = await generateGeminiTurn(settings, [
+          { role: "user", parts: [{ text: prompt }] },
+        ]);
+        if (res.text.trim()) {
+          shortened = res.text.trim();
+        }
+      } catch {
+        // Fallback deterministic bullet condensation
+        shortened = item.originalText
+          .split(/\r?\n/)
+          .map((line) => {
+            const words = line.trim().split(/\s+/);
+            return words.length > 14 ? words.slice(0, 14).join(" ") + "…" : line.trim();
+          })
+          .slice(0, 6)
+          .join("\n");
       }
     }
 
-    return { shortenedText: condensed.trim() };
+    if (shortened) {
+      await replaceSlideText({
+        slideNumber: item.slideIndex,
+        findText: item.originalText,
+        replaceWith: shortened,
+        respectProtectedTerms: false,
+        settings,
+      });
+    }
+
+    if (item.recommendedFontSize) {
+      await formatSlideText({
+        slideNumber: item.slideIndex,
+        shapeId: item.shapeId,
+        fontSize: item.recommendedFontSize,
+        settings,
+      });
+    }
+
+    fixedCount += 1;
   }
-};
+
+  return { fixedCount, undoSnapshots: snapshots };
+}
+
+export async function generateSpeakerNotesForSlide(
+  slideNumber: number,
+  settings: ZeeSettings,
+  writeToSlide: boolean = true
+): Promise<{ notes: string; undoSnapshot?: SlideUndoSnapshot }> {
+  const detail = await readSlide(slideNumber);
+  const prompt = [
+    `Write clear, natural presenter speaker notes (60-90 seconds) for Slide ${detail.index} ("${detail.title}").`,
+    buildDirectionAndLanguageInstruction(settings),
+    `SLIDE CONTENT:\n${detail.fullText || detail.title}`,
+    "Return ONLY the speaker notes text.",
+  ].join("\n\n");
+
+  const res = await generateGeminiTurn(settings, [
+    { role: "user", parts: [{ text: prompt }] },
+  ]);
+  const notes = res.text.trim();
+
+  let undoSnapshot: SlideUndoSnapshot | undefined;
+  if (writeToSlide && notes) {
+    undoSnapshot = await captureSlideSnapshot(
+      `notes-${slideNumber}-${Date.now()}`,
+      "writeSpeakerNotes",
+      slideNumber,
+      "modify"
+    );
+    await writeSpeakerNotes(slideNumber, notes, false);
+  }
+
+  return { notes, undoSnapshot };
+}

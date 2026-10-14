@@ -1,65 +1,69 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { App } from './App';
-import './styles/index.css';
+import React from "react";
+import ReactDOM from "react-dom/client";
+import { App } from "./App";
+import { checkAndHandleStaleCache } from "./services/storageService";
+import "./styles/index.css";
 
-/* global Office */
+// 1. Suppress harmless ResizeObserver loop warnings that Fluent UI v9 can trigger in narrow panes
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (event) => {
+    const msg = String(event.message || "");
+    if (
+      msg.includes("ResizeObserver loop completed with undelivered notifications") ||
+      msg.includes("ResizeObserver loop limit exceeded")
+    ) {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+    }
+  });
 
-// 1. Filter harmless ResizeObserver loop warnings
-window.addEventListener('error', e => {
-  const msg = (e && e.message) ? e.message.toLowerCase() : '';
-  if (
-    msg.includes('resizeobserver loop') ||
-    msg.includes('resizeobserver loop completed with undelivered notifications')
-  ) {
-    e.stopImmediatePropagation();
-    e.preventDefault();
-  }
-});
+  // 2. Auto-reload once if Vite detects a stale cached chunk after a GitHub Pages deploy
+  window.addEventListener("vite:preloadError", () => {
+    const reloadKey = "zee-ppt:preload-reloaded";
+    if (!sessionStorage.getItem(reloadKey)) {
+      sessionStorage.setItem(reloadKey, "1");
+      window.location.reload();
+    }
+  });
+}
 
-let isMounted = false;
-let root: ReactDOM.Root | null = null;
+const isReloading = checkAndHandleStaleCache();
 
-function renderApp(isOfficeReady: boolean) {
-  const container = document.getElementById('root');
-  if (!container) return;
-
-  if (!root) {
-    root = ReactDOM.createRoot(container);
-  }
-  root.render(
+function mountApp() {
+  const rootEl = document.getElementById("root");
+  if (!rootEl) return;
+  ReactDOM.createRoot(rootEl).render(
     <React.StrictMode>
-      <App isOfficeReady={isOfficeReady} />
+      <App />
     </React.StrictMode>
   );
-  isMounted = true;
 }
 
-// 2. Repeated Office readiness check to fix the "Preview mode" banner bug
-let attempts = 0;
-const maxAttempts = 8;
-const checkInterval = 300;
+if (!isReloading) {
+  if (typeof Office !== "undefined" && typeof Office.onReady === "function") {
+    let mounted = false;
+    Office.onReady()
+      .then(() => {
+        if (!mounted) {
+          mounted = true;
+          mountApp();
+        }
+      })
+      .catch(() => {
+        if (!mounted) {
+          mounted = true;
+          mountApp();
+        }
+      });
 
-function checkOfficeReadiness() {
-  if (typeof Office !== 'undefined' && typeof Office.onReady === 'function') {
-    Office.onReady(info => {
-      if (info && info.host === Office.HostType.PowerPoint) {
-        renderApp(true);
-      } else if (attempts < maxAttempts) {
-        attempts++;
-        setTimeout(checkOfficeReadiness, checkInterval);
-      } else {
-        // Fallback: render in browser preview mode
-        renderApp(false);
+    // Fallback mount in case Office.onReady hangs in browser preview mode
+    window.setTimeout(() => {
+      if (!mounted) {
+        mounted = true;
+        mountApp();
       }
-    });
-  } else if (attempts < maxAttempts) {
-    attempts++;
-    setTimeout(checkOfficeReadiness, checkInterval);
+    }, 600);
   } else {
-    renderApp(false);
+    mountApp();
   }
 }
-
-// Initial readiness check
-checkOfficeReadiness();

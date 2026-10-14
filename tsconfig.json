@@ -15,7 +15,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
-    "types": ["@types/office-js", "vite/client"]
+    "types": ["office-js", "vite/client", "node"]
   },
-  "include": ["src", "tests", "scripts"]
+  "include": ["src", "tests"]
 }

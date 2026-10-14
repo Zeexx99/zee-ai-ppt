@@ -1,37 +1,99 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Zee AI - Google Sign In</title>
-  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; text-align: center; }
-    .loader { margin: 40px auto; border: 4px solid #f3f3f3; border-top: 4px solid #D24726; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-  </style>
-</head>
-<body>
-  <div class="loader"></div>
-  <p>Connecting to Google sign-in...</p>
-  <script>
-    Office.onReady(function () {
-      const urlParams = new URLSearchParams(window.location.search);
-      const clientId = urlParams.get('client_id');
-      if (!clientId) {
-        document.body.innerHTML = '<p style="color:red;">Google Client ID is missing. Please enter it in Zee AI Settings.</p>';
-        return;
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zee AI — Google Sign-In</title>
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: #faf9f8;
+        color: #242424;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 85vh;
+        text-align: center;
       }
-      // Build relative redirect URI
-      const redirectUri = new URL('callback.html', window.location.href).toString();
-      const scope = encodeURIComponent('openid profile email');
-      const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' +
-        'client_id=' + encodeURIComponent(clientId) +
-        '&redirect_uri=' + encodeURIComponent(redirectUri) +
-        '&response_type=token' +
-        '&scope=' + scope +
-        '&prompt=select_account';
-      window.location.href = authUrl;
-    });
-  </script>
-</body>
+      .card {
+        background: #ffffff;
+        border: 1px solid #e1dfdd;
+        border-radius: 10px;
+        padding: 24px;
+        max-width: 380px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+      }
+      h2 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        color: #b73618;
+      }
+      p {
+        margin: 0 0 16px;
+        font-size: 13px;
+        color: #605e5c;
+        line-height: 1.5;
+      }
+      .error {
+        color: #a4262c;
+        background: #fde7e9;
+        padding: 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Zee AI for PowerPoint</h2>
+      <p id="status">Redirecting to Google Sign-In...</p>
+      <div id="error" class="error"></div>
+    </div>
+    <script>
+      (function () {
+        try {
+          var params = new URLSearchParams(window.location.search);
+          var clientId = params.get("client_id") || "";
+          var state = params.get("state") || Math.random().toString(36).slice(2);
+          sessionStorage.setItem("zee-ppt:oauth-state", state);
+
+          if (!clientId) {
+            var errEl = document.getElementById("error");
+            errEl.style.display = "block";
+            errEl.textContent =
+              "Missing Google OAuth Client ID. Enter a Google OAuth Client ID in Zee AI Settings, or use a Gemini API Key / Team Proxy.";
+            document.getElementById("status").textContent = "Configuration Required";
+            return;
+          }
+
+          var callbackUrl = new URL("callback.html", window.location.href).toString();
+          var scope = [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/generative-language.retriever"
+          ].join(" ");
+
+          var authUrl =
+            "https://accounts.google.com/o/oauth2/v2/auth" +
+            "?client_id=" + encodeURIComponent(clientId) +
+            "&redirect_uri=" + encodeURIComponent(callbackUrl) +
+            "&response_type=token" +
+            "&scope=" + encodeURIComponent(scope) +
+            "&state=" + encodeURIComponent(state) +
+            "&prompt=select_account";
+
+          window.location.replace(authUrl);
+        } catch (err) {
+          var errBox = document.getElementById("error");
+          errBox.style.display = "block";
+          errBox.textContent = String(err && err.message ? err.message : err);
+        }
+      })();
+    </script>
+  </body>
 </html>

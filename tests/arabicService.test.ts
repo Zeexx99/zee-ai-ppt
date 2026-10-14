@@ -1,68 +1,112 @@
-import { describe, it, expect } from 'vitest';
-import { arabicService } from '../src/services/arabicService';
+import { describe, expect, it } from "vitest";
+import {
+  appendConvertedUnitsToText,
+  containsArabic,
+  convertPetroleumUnit,
+  detectTextDirection,
+  findMissingProtectedTerms,
+  formatBilingualTextBlock,
+  isPredominantlyArabic,
+  maskProtectedTerms,
+  resolveArabicFontFamily,
+  resolveSlideTextAlignment,
+  restoreProtectedTerms,
+} from "../src/services/arabicService";
 
-describe('arabicService', () => {
-  it('detects Arabic script correctly', () => {
-    expect(arabicService.hasArabic('Hello World')).toBe(false);
-    expect(arabicService.hasArabic('مرحبا بالعالم')).toBe(true);
-    expect(arabicService.hasArabic('ESP pump analysis: تحليل مضخة')).toBe(true);
+describe("arabicService", () => {
+  it("detects Arabic characters and predominant direction accurately", () => {
+    expect(containsArabic("North Field ESP Performance")).toBe(false);
+    expect(containsArabic("أداء المضخة الغاطسة ESP في البئر WELL-04")).toBe(true);
+
+    expect(isPredominantlyArabic("أداء المضخة الغاطسة ESP في البئر WELL-04")).toBe(true);
+    expect(detectTextDirection("أداء المضخة الغاطسة ESP", "auto")).toBe("rtl");
+    expect(detectTextDirection("ESP Performance Summary", "auto")).toBe("ltr");
+    expect(detectTextDirection("ESP Performance Summary", "rtl")).toBe("rtl");
   });
 
-  it('calculates Arabic character ratio', () => {
-    const pureEnglish = 'Total Dynamic Head calculation';
-    expect(arabicService.getArabicRatio(pureEnglish)).toBe(0);
+  it("resolves paragraph alignment with centered headings and RTL/LTR body", () => {
+    const arBody = resolveSlideTextAlignment("تحليل إنتاج البئر WELL-01", {
+      directionMode: "auto",
+      isHeading: false,
+      centerHeadings: true,
+    });
+    expect(arBody.direction).toBe("rtl");
+    expect(arBody.alignment).toBe("Right");
 
-    const pureArabic = 'تقرير أداء المضخة الكهربائية الغاطسة';
-    expect(arabicService.getArabicRatio(pureArabic)).toBeGreaterThan(0.9);
+    const enBody = resolveSlideTextAlignment("Production rate increased by 320 bbl/d", {
+      directionMode: "auto",
+      isHeading: false,
+      centerHeadings: true,
+    });
+    expect(enBody.direction).toBe("ltr");
+    expect(enBody.alignment).toBe("Left");
+
+    const heading = resolveSlideTextAlignment("ملخص الأداء التشغيلي", {
+      directionMode: "auto",
+      isHeading: true,
+      centerHeadings: true,
+    });
+    expect(heading.alignment).toBe("Center");
   });
 
-  it('analyzes text direction and recommends RTL and fonts', () => {
-    const arabicHeading = 'تقرير الآبار الربع سنوي';
-    const analysis = arabicService.analyzeDirection(arabicHeading, 'Cairo', true);
-
-    expect(analysis.isRtl).toBe(true);
-    expect(analysis.alignment).toBe('Center'); // Titles centered
-    expect(analysis.suggestedFont).toBe('Cairo');
-
-    const englishBody = 'The current pump intake pressure is 1,200 psi';
-    const enAnalysis = arabicService.analyzeDirection(englishBody, 'Cairo', false);
-    expect(enAnalysis.isRtl).toBe(false);
-    expect(enAnalysis.alignment).toBe('Left');
-    expect(enAnalysis.suggestedFont).toBeUndefined();
+  it("resolves Arabic font preset only when text contains Arabic", () => {
+    expect(
+      resolveArabicFontFamily("English only text", "Sakkal Majalla", "Calibri")
+    ).toBe("Calibri");
+    expect(
+      resolveArabicFontFamily("نص عربي", "Same as document", "Calibri")
+    ).toBe("Calibri");
+    expect(
+      resolveArabicFontFamily("نص عربي", "Sakkal Majalla", "Calibri")
+    ).toBe("Sakkal Majalla");
   });
 
-  it('generates protected terms prompt correctly', () => {
-    const terms = ['ESP', 'TDH', 'PIP', 'GOR', 'BHP', 'bbl/d'];
-    const prompt = arabicService.buildProtectedTermsPrompt(terms);
+  it("masks and restores protected petroleum terms, well names, and units", () => {
+    const input =
+      "Well WELL-04 operates with ESP at PIP 1,120 psi, TDH 5,400 ft, GOR 420 scf/stb, BHP 1,640 psia, rate 2,450 bbl/d.";
+    const masked = maskProtectedTerms(input, ["SCADA"]);
 
-    expect(prompt).toContain('CRITICAL INSTRUCTION - PROTECTED TERMS');
-    expect(prompt).toContain('"ESP"');
-    expect(prompt).toContain('"bbl/d"');
+    expect(masked.maskedText).not.toContain("WELL-04");
+    expect(masked.maskedText).not.toContain("2,450 bbl/d");
+    expect(masked.protectedValues).toContain("ESP");
+    expect(masked.protectedValues).toContain("TDH");
+    expect(masked.protectedValues).toContain("GOR");
+    expect(masked.protectedValues).toContain("WELL-04");
+
+    const restored = restoreProtectedTerms(masked.maskedText, masked.placeholders);
+    expect(restored).toBe(input);
+
+    const missing = findMissingProtectedTerms(
+      input,
+      "Well WELL-04 operates with ESP at PIP 1,120 psi and TDH 5,400 ft."
+    );
+    expect(missing).toContain("GOR");
   });
 
-  it('detects missing or altered protected terms', () => {
-    const original = 'Verify ESP motor temperature and TDH at 60 Hz.';
-    const goodOutput = 'تأكد من حرارة محرك الـ ESP وقيمة TDH عند 60 Hz.';
-    const badOutput = 'تأكد من حرارة المحرك وقيمة الرأس الهيدروليكي.';
-
-    const terms = ['ESP', 'TDH', 'PIP'];
-
-    const checkGood = arabicService.checkProtectedTermsIntegrity(original, goodOutput, terms);
-    expect(checkGood.intact).toBe(true);
-    expect(checkGood.missingTerms).toHaveLength(0);
-
-    const checkBad = arabicService.checkProtectedTermsIntegrity(original, badOutput, terms);
-    expect(checkBad.intact).toBe(false);
-    expect(checkBad.missingTerms).toContain('ESP');
-    expect(checkBad.missingTerms).toContain('TDH');
+  it("formats bilingual text blocks cleanly", () => {
+    const block = formatBilingualTextBlock(
+      "• Target rate: 2,500 bbl/d",
+      "• معدل الإنتاج المستهدف: 2,500 bbl/d"
+    );
+    expect(block).toContain("• Target rate: 2,500 bbl/d");
+    expect(block).toContain("• معدل الإنتاج المستهدف: 2,500 bbl/d");
   });
 
-  it('generates bilingual instructions', () => {
-    const enabled = arabicService.buildBilingualInstruction(true);
-    expect(enabled).toContain('BILINGUAL MODE ACTIVE');
-    expect(enabled).toContain('English first');
+  it("converts petroleum engineering units accurately", () => {
+    const bblRes = convertPetroleumUnit(1000, "bbl/d");
+    expect(bblRes).not.toBeNull();
+    expect(bblRes?.toUnit).toBe("m³/d");
+    expect(bblRes?.outputValue).toBeCloseTo(158.99, 1);
 
-    const disabled = arabicService.buildBilingualInstruction(false);
-    expect(disabled).toBe('');
+    const psiRes = convertPetroleumUnit(1000, "psi");
+    expect(psiRes?.toUnit).toBe("bar");
+    expect(psiRes?.outputValue).toBeCloseTo(68.95, 1);
+
+    const inline = appendConvertedUnitsToText(
+      "WELL-04 produces 1,000 bbl/d at PIP 1,000 psi."
+    );
+    expect(inline.conversions.length).toBe(2);
+    expect(inline.convertedText).toContain("m³/d");
+    expect(inline.convertedText).toContain("bar");
   });
 });

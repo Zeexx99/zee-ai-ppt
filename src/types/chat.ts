@@ -1,63 +1,94 @@
-export type MessageRole = 'user' | 'assistant' | 'system';
+export type AttachmentKind = "image" | "pdf" | "text";
 
-export interface Attachment {
+export interface ChatAttachment {
   id: string;
   name: string;
-  type: 'image' | 'pdf';
   mimeType: string;
-  base64Data: string; // raw base64 without prefix for Gemini inlineData
-  size: number;
+  kind: AttachmentKind;
+  base64Data: string; // raw base64 without data: prefix
+  sizeBytes: number;
+  textContent?: string;
 }
 
-export type StepStatus = 'pending' | 'approving' | 'running' | 'success' | 'failed';
+export type AgentStepStatus =
+  | "pending_approval"
+  | "approved"
+  | "running"
+  | "completed"
+  | "failed"
+  | "rejected"
+  | "undone";
 
-export interface AgentStep {
+export interface SlideUndoSnapshot {
+  stepId: string;
+  toolName: string;
+  timestamp: number;
+  slideIndex: number;
+  slideId?: string;
+  actionType: "modify" | "add_slide" | "delete_slide" | "reorder_slide";
+  previousTitle?: string;
+  previousBodyTexts?: { shapeId: string; name: string; text: string }[];
+  previousNotes?: string;
+  createdSlideId?: string;
+  deletedSlideState?: {
+    index: number;
+    title: string;
+    bodyTexts: string[];
+    notes: string;
+    layoutName?: string;
+  };
+  reorderFromIndex?: number;
+  reorderToIndex?: number;
+}
+
+export interface AgentToolStep {
   id: string;
   stepNumber: number;
   toolName: string;
+  args: Record<string, unknown>;
   description: string;
-  status: StepStatus;
-  params?: Record<string, unknown>;
-  result?: string;
-  error?: string;
-  timestamp: number;
+  requiresApproval: boolean;
+  status: AgentStepStatus;
+  resultSummary?: string;
+  errorMessage?: string;
+  retryCount: number;
+  undoSnapshot?: SlideUndoSnapshot;
 }
 
-export interface ToolApproval {
-  stepId: string;
-  toolName: string;
-  description: string;
-  params: Record<string, unknown>;
-  isPending: boolean;
-  approved?: boolean;
+export interface GroundingCitation {
+  title: string;
+  uri: string;
 }
 
 export interface ChatMessage {
   id: string;
-  role: MessageRole;
+  role: "user" | "assistant" | "system";
   content: string;
   timestamp: number;
-  attachments?: Attachment[];
-  agentSteps?: AgentStep[];
-  toolApproval?: ToolApproval;
   isStreaming?: boolean;
-  error?: string;
-  tokenCount?: number;
-  isBilingual?: boolean;
-}
-
-export interface UndoRecord {
-  id: string;
-  stepId: string;
-  description: string;
-  timestamp: number;
-  actionType: string;
-  snapshotData: unknown;
+  attachments?: ChatAttachment[];
+  agentSteps?: AgentToolStep[];
+  awaitingContinue?: boolean;
+  citations?: GroundingCitation[];
+  codeExecutionOutput?: string;
+  estimatedTokens?: number;
+  direction?: "rtl" | "ltr";
 }
 
 export interface SavedPrompt {
   id: string;
   title: string;
   prompt: string;
-  category: 'generate' | 'edit' | 'notes' | 'petroleum' | 'arabic';
+  category: "slide" | "arabic" | "petroleum" | "custom";
+  isBuiltIn?: boolean;
 }
+
+export type QuickActionType =
+  | "rewrite"
+  | "translate_ar"
+  | "translate_en"
+  | "translate_bilingual"
+  | "summarize"
+  | "shorten_fit"
+  | "speaker_notes"
+  | "convert_units";

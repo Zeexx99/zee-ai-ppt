@@ -1,399 +1,932 @@
-import { AgentStep, ToolApproval, UndoRecord } from '../types/chat';
-import { AppSettings } from '../types/settings';
-import { pptService } from './pptService';
-import { arabicService } from './arabicService';
-import { FunctionDeclaration, geminiService, ToolCall } from './geminiService';
+import { AgentToolStep, ChatAttachment, ChatMessage } from "../types/chat";
+import { PowerPointApiRequirements } from "../types/ppt";
+import { ZeeSettings } from "../types/settings";
+import {
+  buildGeminiContents,
+  buildSystemInstruction,
+  GeminiFunctionCall,
+  GeminiFunctionDeclaration,
+  GeminiTurnContent,
+  generateGeminiTurn,
+} from "./geminiService";
+import {
+  addSlide,
+  applySlideLayout,
+  captureSlideSnapshot,
+  deleteSlide,
+  formatCompactPresentationSummary,
+  formatSlideText,
+  getActiveSlideIndex,
+  getPresentationSummary,
+  getSelectedText,
+  insertImage,
+  insertTable,
+  insertTextBox,
+  listSlides,
+  readSlide,
+  readSpeakerNotes,
+  reorderSlide,
+  replaceSlideText,
+  restoreUndoSnapshot,
+  setSlideTitle,
+  writeSpeakerNotes,
+} from "./pptService";
 
-export const AGENT_TOOLS: FunctionDeclaration[] = [
+export const READ_ONLY_TOOLS = new Set<string>([
+  "listSlides",
+  "readSlide",
+  "getSelectedText",
+  "readSpeakerNotes",
+]);
+
+export const WRITE_TOOLS = new Set<string>([
+  "writeSpeakerNotes",
+  "addSlide",
+  "deleteSlide",
+  "reorderSlide",
+  "setSlideTitle",
+  "insertTextBox",
+  "replaceSlideText",
+  "insertTable",
+  "insertImage",
+  "formatSlideText",
+  "applySlideLayout",
+]);
+
+export const ALL_AGENT_TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
-    name: 'list_slides',
-    description: 'Lists all slides in the presentation with their indices and titles (Read-only).',
+    name: "listSlides",
+    description:
+      "List all slides in the presentation with their 1-based slide numbers, titles, shape counts, and text previews.",
     parameters: {
-      type: 'object',
-      properties: {}
-    }
+      type: "OBJECT",
+      properties: {},
+    },
   },
   {
-    name: 'read_slide',
-    description: 'Reads the full text, titles, bullet points, and speaker notes of a specific slide (Read-only).',
+    name: "readSlide",
+    description:
+      "Read full details of a specific slide (1-based slideNumber), including all text shapes, fonts, positions, and speaker notes.",
     parameters: {
-      type: 'object',
+      type: "OBJECT",
       properties: {
-        slideIndex: { type: 'number', description: '1-based slide index to read' }
-      },
-      required: ['slideIndex']
-    }
-  },
-  {
-    name: 'read_selected_text',
-    description: 'Reads text currently selected by the user in PowerPoint (Read-only).',
-    parameters: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'read_speaker_notes',
-    description: 'Reads the presenter speaker notes for a slide (Read-only).',
-    parameters: {
-      type: 'object',
-      properties: {
-        slideIndex: { type: 'number', description: '1-based slide index' }
-      },
-      required: ['slideIndex']
-    }
-  },
-  {
-    name: 'add_slide',
-    description: 'Creates a new slide with an optional title and bullet points.',
-    parameters: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'Headline title for the new slide' },
-        bullets: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Key bullet points for the slide body'
-        }
-      }
-    }
-  },
-  {
-    name: 'delete_slide',
-    description: 'Permanently deletes a slide at the specified 1-based index.',
-    parameters: {
-      type: 'object',
-      properties: {
-        slideIndex: { type: 'number', description: '1-based slide index to delete' }
-      },
-      required: ['slideIndex']
-    }
-  },
-  {
-    name: 'insert_text_box',
-    description: 'Inserts a new text box onto a slide with optional formatting (font size, bold, color, RTL).',
-    parameters: {
-      type: 'object',
-      properties: {
-        slideIndex: { type: 'number', description: '1-based slide index' },
-        text: { type: 'string', description: 'Text content to insert' },
-        fontSize: { type: 'number', description: 'Font size in points (e.g. 18)' },
-        bold: { type: 'boolean', description: 'Whether text is bold' },
-        color: { type: 'string', description: 'Hex color code, e.g. #D24726' },
-        isRtl: { type: 'boolean', description: 'Set true if text is Arabic / right-to-left' }
-      },
-      required: ['slideIndex', 'text']
-    }
-  },
-  {
-    name: 'insert_table',
-    description: 'Inserts a formatted grid table onto a slide with headers and data rows.',
-    parameters: {
-      type: 'object',
-      properties: {
-        slideIndex: { type: 'number', description: '1-based slide index' },
-        rows: { type: 'number', description: 'Number of rows' },
-        columns: { type: 'number', description: 'Number of columns' },
-        headers: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Header column titles'
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number to read.",
         },
-        data: {
-          type: 'array',
-          items: { type: 'array', items: { type: 'string' } },
-          description: '2D array of table row values'
-        }
       },
-      required: ['slideIndex', 'rows', 'columns']
-    }
+      required: ["slideNumber"],
+    },
   },
   {
-    name: 'write_speaker_notes',
-    description: 'Writes or appends presenter speaker notes to a slide.',
+    name: "getSelectedText",
+    description: "Read the text or shape currently selected by the user in PowerPoint.",
     parameters: {
-      type: 'object',
-      properties: {
-        slideIndex: { type: 'number', description: '1-based slide index' },
-        notesText: { type: 'string', description: 'Speaker notes text' },
-        append: { type: 'boolean', description: 'Whether to append or overwrite' }
-      },
-      required: ['slideIndex', 'notesText']
-    }
+      type: "OBJECT",
+      properties: {},
+    },
   },
   {
-    name: 'replace_text',
-    description: 'Finds and replaces text across a slide or the entire presentation.',
+    name: "readSpeakerNotes",
+    description: "Read the speaker notes for a specific 1-based slideNumber.",
     parameters: {
-      type: 'object',
+      type: "OBJECT",
       properties: {
-        search: { type: 'string', description: 'Exact string to find' },
-        replacement: { type: 'string', description: 'Replacement string' },
-        slideIndex: { type: 'number', description: 'Optional 1-based slide index to restrict replacement' }
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
       },
-      required: ['search', 'replacement']
-    }
-  }
+      required: ["slideNumber"],
+    },
+  },
+  {
+    name: "writeSpeakerNotes",
+    description: "Write or append speaker notes for a specific 1-based slideNumber.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
+        notes: {
+          type: "STRING",
+          description: "Speaker notes text to write.",
+        },
+        append: {
+          type: "BOOLEAN",
+          description: "If true, append to existing notes instead of replacing.",
+        },
+      },
+      required: ["slideNumber", "notes"],
+    },
+  },
+  {
+    name: "addSlide",
+    description:
+      "Add a new slide to the presentation with a title, bullet points or body text, optional layout name, and optional speaker notes.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        title: {
+          type: "STRING",
+          description: "Slide title.",
+        },
+        bodyText: {
+          type: "STRING",
+          description: "Bullet points or body text separated by newlines.",
+        },
+        layoutName: {
+          type: "STRING",
+          description:
+            "Layout name (e.g. 'Title and Content', 'Title Slide', 'Two Content', 'Section Header').",
+        },
+        notes: {
+          type: "STRING",
+          description: "Optional speaker notes for the new slide.",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    name: "deleteSlide",
+    description: "Delete a slide at the specified 1-based slideNumber.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number to delete.",
+        },
+      },
+      required: ["slideNumber"],
+    },
+  },
+  {
+    name: "reorderSlide",
+    description: "Move a slide from fromSlideNumber (1-based) to toSlideNumber (1-based).",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        fromSlideNumber: {
+          type: "INTEGER",
+          description: "Current 1-based slide position.",
+        },
+        toSlideNumber: {
+          type: "INTEGER",
+          description: "Target 1-based slide position.",
+        },
+      },
+      required: ["fromSlideNumber", "toSlideNumber"],
+    },
+  },
+  {
+    name: "setSlideTitle",
+    description: "Insert or update the title of a specific slide (1-based slideNumber).",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
+        title: {
+          type: "STRING",
+          description: "New title text for the slide.",
+        },
+      },
+      required: ["slideNumber", "title"],
+    },
+  },
+  {
+    name: "insertTextBox",
+    description:
+      "Insert a text box onto a slide with specified text, optional position/size (in points), and optional heading style.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
+        text: {
+          type: "STRING",
+          description: "Text content to insert.",
+        },
+        left: { type: "NUMBER", description: "Left position in points (default 48)." },
+        top: { type: "NUMBER", description: "Top position in points (default 110)." },
+        width: { type: "NUMBER", description: "Width in points (default 624)." },
+        height: { type: "NUMBER", description: "Height in points (default 260)." },
+        isHeading: { type: "BOOLEAN", description: "Whether to style as a centered heading." },
+      },
+      required: ["slideNumber", "text"],
+    },
+  },
+  {
+    name: "replaceSlideText",
+    description:
+      "Find and replace text on a specific slide (or across all slides when slideNumber is 0 or omitted), respecting protected engineering terms.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number, or 0 for all slides.",
+        },
+        findText: {
+          type: "STRING",
+          description: "Text to find.",
+        },
+        replaceWith: {
+          type: "STRING",
+          description: "Replacement text.",
+        },
+      },
+      required: ["findText", "replaceWith"],
+    },
+  },
+  {
+    name: "insertTable",
+    description: "Insert a formatted data table onto a slide with column headers and row cells.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
+        title: {
+          type: "STRING",
+          description: "Optional table caption/title.",
+        },
+        headers: {
+          type: "ARRAY",
+          description: "Array of column header strings.",
+          items: { type: "STRING" },
+        },
+        rowsJson: {
+          type: "STRING",
+          description:
+            "JSON 2D array of row strings, e.g. '[[\"WELL-01\",\"1,250 bbl/d\",\"1,180 psi\"]]'.",
+        },
+      },
+      required: ["slideNumber", "headers", "rowsJson"],
+    },
+  },
+  {
+    name: "insertImage",
+    description: "Insert a Base64-encoded image onto a slide.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
+        base64Data: {
+          type: "STRING",
+          description: "Base64 image data or attachment reference.",
+        },
+        left: { type: "NUMBER", description: "Left position in points." },
+        top: { type: "NUMBER", description: "Top position in points." },
+        width: { type: "NUMBER", description: "Width in points." },
+        height: { type: "NUMBER", description: "Height in points." },
+      },
+      required: ["slideNumber", "base64Data"],
+    },
+  },
+  {
+    name: "formatSlideText",
+    description:
+      "Format text on a slide (font family, font size, hex color, bold, italic, alignment Left/Center/Right, and RTL/LTR direction).",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
+        shapeId: {
+          type: "STRING",
+          description: "Optional specific shapeId to format (omit to format all text shapes on the slide).",
+        },
+        fontName: {
+          type: "STRING",
+          description: "Font family name (e.g. 'Calibri', 'Simplified Arabic').",
+        },
+        fontSize: {
+          type: "NUMBER",
+          description: "Font size in points.",
+        },
+        fontColor: {
+          type: "STRING",
+          description: "Hex color such as '#B73618' or '#242424'.",
+        },
+        bold: {
+          type: "BOOLEAN",
+          description: "Bold formatting.",
+        },
+        italic: {
+          type: "BOOLEAN",
+          description: "Italic formatting.",
+        },
+        alignment: {
+          type: "STRING",
+          description: "Paragraph alignment: 'Left', 'Center', or 'Right'.",
+          enum: ["Left", "Center", "Right"],
+        },
+        direction: {
+          type: "STRING",
+          description: "Text direction: 'rtl' or 'ltr'.",
+          enum: ["rtl", "ltr"],
+        },
+      },
+      required: ["slideNumber"],
+    },
+  },
+  {
+    name: "applySlideLayout",
+    description:
+      "Apply a slide layout or company template theme styling (heading font, body font, primary color) to a slide.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        slideNumber: {
+          type: "INTEGER",
+          description: "1-based slide number.",
+        },
+        layoutName: {
+          type: "STRING",
+          description: "Layout name (e.g. 'Title and Content', 'Two Content').",
+        },
+        primaryColor: {
+          type: "STRING",
+          description: "Hex color for slide headings.",
+        },
+        headingFont: {
+          type: "STRING",
+          description: "Font family for slide headings.",
+        },
+        bodyFont: {
+          type: "STRING",
+          description: "Font family for body text.",
+        },
+      },
+      required: ["slideNumber"],
+    },
+  },
 ];
 
-export const agentService = {
-  /**
-   * Identifies if a tool call is read-only or mutates the document
-   */
-  isReadOnlyTool(name: string): boolean {
-    return ['list_slides', 'read_slide', 'read_selected_text', 'read_speaker_notes'].includes(name);
-  },
+export function isReadOnlyTool(toolName: string): boolean {
+  return READ_ONLY_TOOLS.has(toolName);
+}
 
-  /**
-   * Formats a human-readable description for an approval card
-   */
-  formatApprovalDescription(toolName: string, args: Record<string, unknown>): string {
-    switch (toolName) {
-      case 'add_slide':
-        return `Add new slide${args.title ? `: "${args.title}"` : ''} with ${Array.isArray(args.bullets) ? args.bullets.length : 0} bullet points`;
-      case 'delete_slide':
-        return `Delete slide ${args.slideIndex}`;
-      case 'insert_text_box':
-        return `Insert text box on slide ${args.slideIndex}: "${String(args.text || '').substring(0, 40)}..."`;
-      case 'insert_table':
-        return `Insert ${args.rows}x${args.columns} table on slide ${args.slideIndex}`;
-      case 'write_speaker_notes':
-        return `Update speaker notes for slide ${args.slideIndex}`;
-      case 'replace_text':
-        return `Replace "${args.search}" with "${args.replacement}"`;
-      default:
-        return `Execute ${toolName}`;
-    }
-  },
+export function requiresToolApproval(toolName: string): boolean {
+  return !isReadOnlyTool(toolName);
+}
 
-  /**
-   * Executes a tool with snapshot recording for undo
-   */
-  async executeTool(
-    toolName: string,
-    args: Record<string, unknown>,
-    settings: AppSettings
-  ): Promise<{ result: string; undoRecord?: UndoRecord }> {
-    switch (toolName) {
-      case 'list_slides': {
-        const overview = await pptService.getPresentationOverview();
-        const summary = overview.slides
-          .map(s => `Slide ${s.index}: "${s.title}" (${s.shapeCount} shapes)`)
-          .join('\n');
-        return {
-          result: `Total slides: ${overview.slideCount}\n${summary || 'No slides found'}`
-        };
-      }
+export function getSupportedAgentTools(
+  reqs: PowerPointApiRequirements
+): GeminiFunctionDeclaration[] {
+  return ALL_AGENT_TOOL_DECLARATIONS.filter((tool) => {
+    if (!reqs.isPowerPointHost) return true;
+    if (tool.name === "reorderSlide" && !reqs.pptApi1_6) return false;
+    if (tool.name === "deleteSlide" && !reqs.pptApi1_2) return false;
+    if (tool.name === "insertImage" && !reqs.imageCoercionSupported) return false;
+    return true;
+  });
+}
 
-      case 'read_slide': {
-        const idx = Number(args.slideIndex) || 1;
-        const data = await pptService.readSlide(idx);
-        let notes = '';
-        try {
-          notes = await pptService.readSpeakerNotes(idx);
-        } catch {
-          // ignore
-        }
-        return {
-          result: `Slide ${idx}:\nTitle: ${data.title}\nBullets:\n${data.bullets.join('\n')}\nNotes: ${notes || '(none)'}`
-        };
-      }
-
-      case 'read_selected_text': {
-        const text = await pptService.getSelectedText();
-        return { result: text ? `Selected text: "${text}"` : 'No text is currently selected.' };
-      }
-
-      case 'read_speaker_notes': {
-        const idx = Number(args.slideIndex) || 1;
-        const notes = await pptService.readSpeakerNotes(idx);
-        return { result: notes ? `Notes for slide ${idx}:\n${notes}` : `Slide ${idx} has no speaker notes.` };
-      }
-
-      case 'add_slide': {
-        const title = args.title ? String(args.title) : undefined;
-        const bullets = Array.isArray(args.bullets) ? (args.bullets as string[]) : undefined;
-
-        const res = await pptService.addSlide({ title, bullets });
-        const undo: UndoRecord = {
-          id: `undo-${Date.now()}`,
-          stepId: `step-${Date.now()}`,
-          description: `Add slide ${res.slideIndex}`,
-          timestamp: Date.now(),
-          actionType: 'add_slide',
-          snapshotData: { slideIndex: res.slideIndex }
-        };
-
-        return {
-          result: `Successfully added slide ${res.slideIndex}`,
-          undoRecord: undo
-        };
-      }
-
-      case 'delete_slide': {
-        const idx = Number(args.slideIndex);
-        // Snapshot before deletion
-        const priorData = await pptService.readSlide(idx);
-        await pptService.deleteSlide(idx);
-
-        const undo: UndoRecord = {
-          id: `undo-${Date.now()}`,
-          stepId: `step-${Date.now()}`,
-          description: `Deleted slide ${idx}`,
-          timestamp: Date.now(),
-          actionType: 'delete_slide',
-          snapshotData: { priorData, slideIndex: idx }
-        };
-
-        return {
-          result: `Successfully deleted slide ${idx}`,
-          undoRecord: undo
-        };
-      }
-
-      case 'insert_text_box': {
-        const idx = Number(args.slideIndex) || 1;
-        const text = String(args.text || '');
-        const isRtl = args.isRtl !== undefined ? Boolean(args.isRtl) : arabicService.hasArabic(text);
-
-        await pptService.insertTextBox(idx, text, {
-          fontSize: args.fontSize ? Number(args.fontSize) : 18,
-          bold: args.bold !== undefined ? Boolean(args.bold) : false,
-          color: args.color ? String(args.color) : settings.companyTemplate.textColor,
-          isRtl
-        });
-
-        return {
-          result: `Inserted text box on slide ${idx}`
-        };
-      }
-
-      case 'insert_table': {
-        const idx = Number(args.slideIndex) || 1;
-        const rows = Number(args.rows) || 2;
-        const columns = Number(args.columns) || 2;
-        const headers = Array.isArray(args.headers) ? (args.headers as string[]) : undefined;
-        const data = Array.isArray(args.data) ? (args.data as string[][]) : undefined;
-
-        await pptService.insertTable(idx, { rows, columns, headers, data });
-        return {
-          result: `Inserted ${rows}x${columns} table on slide ${idx}`
-        };
-      }
-
-      case 'write_speaker_notes': {
-        const idx = Number(args.slideIndex) || 1;
-        const text = String(args.notesText || '');
-        const append = Boolean(args.append);
-
-        // Snapshot prior notes
-        const priorNotes = await pptService.readSpeakerNotes(idx);
-        await pptService.writeSpeakerNotes(idx, text, append);
-
-        const undo: UndoRecord = {
-          id: `undo-${Date.now()}`,
-          stepId: `step-${Date.now()}`,
-          description: `Updated notes on slide ${idx}`,
-          timestamp: Date.now(),
-          actionType: 'write_speaker_notes',
-          snapshotData: { slideIndex: idx, priorNotes }
-        };
-
-        return {
-          result: `Updated speaker notes for slide ${idx}`,
-          undoRecord: undo
-        };
-      }
-
-      case 'replace_text': {
-        const search = String(args.search || '');
-        const replacement = String(args.replacement || '');
-        const slideIndex = args.slideIndex ? Number(args.slideIndex) : undefined;
-
-        const res = await pptService.replaceText(search, replacement, slideIndex);
-        const undo: UndoRecord = {
-          id: `undo-${Date.now()}`,
-          stepId: `step-${Date.now()}`,
-          description: `Replaced "${search}" with "${replacement}"`,
-          timestamp: Date.now(),
-          actionType: 'replace_text',
-          snapshotData: { search: replacement, replacement: search, slideIndex }
-        };
-
-        return {
-          result: `Replaced ${res.replacementsCount} occurrence(s) of "${search}"`,
-          undoRecord: undo
-        };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${toolName}`);
-    }
-  },
-
-  /**
-   * Reverts an action using its recorded undo snapshot
-   */
-  async undoAction(record: UndoRecord): Promise<string> {
-    switch (record.actionType) {
-      case 'add_slide': {
-        const data = record.snapshotData as { slideIndex: number };
-        await pptService.deleteSlide(data.slideIndex);
-        return `Deleted added slide ${data.slideIndex}`;
-      }
-
-      case 'delete_slide': {
-        const data = record.snapshotData as { priorData: { title: string; bullets: string[] } };
-        await pptService.addSlide({
-          title: data.priorData.title,
-          bullets: data.priorData.bullets
-        });
-        return `Restored deleted slide "${data.priorData.title}"`;
-      }
-
-      case 'write_speaker_notes': {
-        const data = record.snapshotData as { slideIndex: number; priorNotes: string };
-        await pptService.writeSpeakerNotes(data.slideIndex, data.priorNotes, false);
-        return `Restored prior notes for slide ${data.slideIndex}`;
-      }
-
-      case 'replace_text': {
-        const data = record.snapshotData as { search: string; replacement: string; slideIndex?: number };
-        await pptService.replaceText(data.search, data.replacement, data.slideIndex);
-        return `Reverted text replacement`;
-      }
-
-      default:
-        return `Undo not supported for ${record.actionType}`;
-    }
-  },
-
-  /**
-   * Builds the agent system prompt incorporating presentation context, protected terms, and Arabic direction
-   */
-  buildSystemPrompt(overview: { slideCount: number; slides: { index: number; title: string }[] }, settings: AppSettings): string {
-    const protectedTermsClause = arabicService.buildProtectedTermsPrompt(settings.protectedTerms);
-    const bilingualClause = arabicService.buildBilingualInstruction(settings.bilingualMode);
-
-    const slidesSummary = overview.slides.map(s => `Slide ${s.index}: "${s.title}"`).join('\n');
-
-    return `You are Zee AI for PowerPoint, an expert AI presentation assistant.
-You are helping the user build, edit, summarize, and polish PowerPoint presentations.
-
-PRESENTATION OVERVIEW:
-Total slides: ${overview.slideCount}
-${slidesSummary || '(Presentation currently empty)'}
-
-CORE BEHAVIOR & RULES:
-1. Always be concise, clear, and professional.
-2. When creating or revising slides, use clean, impactful titles and 3-5 punchy bullet points.
-3. Call specific tools (like add_slide, insert_table, write_speaker_notes) to make edits.
-4. For petroleum engineering data (ESP pumps, decline curves, GOR, BHP, etc.), present key metrics prominently in bullet points or tables.
-5. Never translate or change protected petroleum terms or abbreviations.
-6. If the user writes in Arabic, format text appropriately with RTL orientation.
-
-${protectedTermsClause}
-
-${bilingualClause}`;
+export function describeToolStep(
+  toolName: string,
+  args: Record<string, unknown>
+): string {
+  const slideNum = args.slideNumber ? `Slide ${args.slideNumber}` : "Presentation";
+  switch (toolName) {
+    case "listSlides":
+      return "List all slides and titles in the presentation";
+    case "readSlide":
+      return `Read text, shapes, and notes on ${slideNum}`;
+    case "getSelectedText":
+      return "Read currently selected text in PowerPoint";
+    case "readSpeakerNotes":
+      return `Read speaker notes on ${slideNum}`;
+    case "writeSpeakerNotes":
+      return `Write speaker notes on ${slideNum}`;
+    case "addSlide":
+      return `Add new slide "${args.title || "Untitled"}"${args.layoutName ? ` (${args.layoutName})` : ""}`;
+    case "deleteSlide":
+      return `Delete ${slideNum}`;
+    case "reorderSlide":
+      return `Reorder Slide ${args.fromSlideNumber} → position ${args.toSlideNumber}`;
+    case "setSlideTitle":
+      return `Set ${slideNum} title to "${args.title || ""}"`;
+    case "insertTextBox":
+      return `Insert text box on ${slideNum}: "${String(args.text || "").slice(0, 50)}..."`;
+    case "replaceSlideText":
+      return `Replace "${args.findText}" with "${args.replaceWith}" on ${args.slideNumber ? slideNum : "all slides"}`;
+    case "insertTable":
+      return `Insert table${args.title ? ` "${args.title}"` : ""} on ${slideNum}`;
+    case "insertImage":
+      return `Insert image onto ${slideNum}`;
+    case "formatSlideText":
+      return `Format text on ${slideNum} (${[
+        args.fontName,
+        args.fontSize ? `${args.fontSize}pt` : "",
+        args.alignment,
+        args.direction ? String(args.direction).toUpperCase() : "",
+      ]
+        .filter(Boolean)
+        .join(", ")})`;
+    case "applySlideLayout":
+      return `Apply layout "${args.layoutName || "Company Template"}" to ${slideNum}`;
+    default:
+      return `${toolName}(${JSON.stringify(args).slice(0, 60)})`;
   }
-};
+}
+
+export function validateToolArgs(
+  toolName: string,
+  args: Record<string, unknown>
+): { valid: boolean; error?: string } {
+  switch (toolName) {
+    case "readSlide":
+    case "readSpeakerNotes":
+    case "deleteSlide":
+    case "formatSlideText":
+    case "applySlideLayout": {
+      const n = Number(args.slideNumber);
+      if (!Number.isFinite(n) || n < 1) {
+        return { valid: false, error: `${toolName} requires a valid 1-based slideNumber >= 1.` };
+      }
+      return { valid: true };
+    }
+    case "writeSpeakerNotes": {
+      const n = Number(args.slideNumber);
+      if (!Number.isFinite(n) || n < 1) {
+        return { valid: false, error: "writeSpeakerNotes requires slideNumber >= 1." };
+      }
+      if (typeof args.notes !== "string") {
+        return { valid: false, error: "writeSpeakerNotes requires a string 'notes'." };
+      }
+      return { valid: true };
+    }
+    case "addSlide": {
+      if (!args.title || typeof args.title !== "string") {
+        return { valid: false, error: "addSlide requires a non-empty string 'title'." };
+      }
+      return { valid: true };
+    }
+    case "reorderSlide": {
+      const from = Number(args.fromSlideNumber);
+      const to = Number(args.toSlideNumber);
+      if (!Number.isFinite(from) || from < 1 || !Number.isFinite(to) || to < 1) {
+        return {
+          valid: false,
+          error: "reorderSlide requires fromSlideNumber >= 1 and toSlideNumber >= 1.",
+        };
+      }
+      return { valid: true };
+    }
+    case "setSlideTitle": {
+      if (!Number.isFinite(Number(args.slideNumber)) || Number(args.slideNumber) < 1) {
+        return { valid: false, error: "setSlideTitle requires slideNumber >= 1." };
+      }
+      if (typeof args.title !== "string") {
+        return { valid: false, error: "setSlideTitle requires a string 'title'." };
+      }
+      return { valid: true };
+    }
+    case "insertTextBox": {
+      if (!Number.isFinite(Number(args.slideNumber)) || Number(args.slideNumber) < 1) {
+        return { valid: false, error: "insertTextBox requires slideNumber >= 1." };
+      }
+      if (typeof args.text !== "string" || !args.text.trim()) {
+        return { valid: false, error: "insertTextBox requires non-empty 'text'." };
+      }
+      return { valid: true };
+    }
+    case "replaceSlideText": {
+      if (typeof args.findText !== "string" || !args.findText) {
+        return { valid: false, error: "replaceSlideText requires non-empty 'findText'." };
+      }
+      if (typeof args.replaceWith !== "string") {
+        return { valid: false, error: "replaceSlideText requires 'replaceWith'." };
+      }
+      return { valid: true };
+    }
+    case "insertTable": {
+      if (!Number.isFinite(Number(args.slideNumber)) || Number(args.slideNumber) < 1) {
+        return { valid: false, error: "insertTable requires slideNumber >= 1." };
+      }
+      if (!Array.isArray(args.headers)) {
+        return { valid: false, error: "insertTable requires an array 'headers'." };
+      }
+      return { valid: true };
+    }
+    default:
+      return { valid: true };
+  }
+}
+
+export async function executeAgentToolStep(
+  step: AgentToolStep,
+  settings: ZeeSettings,
+  attachments: ChatAttachment[] = []
+): Promise<AgentToolStep> {
+  const validation = validateToolArgs(step.toolName, step.args);
+  if (!validation.valid) {
+    return {
+      ...step,
+      status: "failed",
+      errorMessage: validation.error,
+    };
+  }
+
+  let workingStep: AgentToolStep = {
+    ...step,
+    status: "running",
+    errorMessage: undefined,
+  };
+
+  // Capture undo snapshot before mutating tools
+  if (workingStep.requiresApproval) {
+    try {
+      const activeSlide = Number(workingStep.args.slideNumber) || (await getActiveSlideIndex());
+      if (workingStep.toolName === "addSlide") {
+        const slides = await listSlides();
+        workingStep.undoSnapshot = {
+          stepId: workingStep.id,
+          toolName: workingStep.toolName,
+          timestamp: Date.now(),
+          slideIndex: slides.length + 1,
+          actionType: "add_slide",
+        };
+      } else if (workingStep.toolName === "deleteSlide") {
+        workingStep.undoSnapshot = await captureSlideSnapshot(
+          workingStep.id,
+          workingStep.toolName,
+          activeSlide,
+          "delete_slide"
+        );
+      } else if (workingStep.toolName === "reorderSlide") {
+        workingStep.undoSnapshot = {
+          stepId: workingStep.id,
+          toolName: workingStep.toolName,
+          timestamp: Date.now(),
+          slideIndex: Number(workingStep.args.fromSlideNumber) || 1,
+          actionType: "reorder_slide",
+          reorderFromIndex: Number(workingStep.args.fromSlideNumber) || 1,
+          reorderToIndex: Number(workingStep.args.toSlideNumber) || 1,
+        };
+      } else {
+        workingStep.undoSnapshot = await captureSlideSnapshot(
+          workingStep.id,
+          workingStep.toolName,
+          activeSlide,
+          "modify"
+        );
+      }
+    } catch {
+      // Proceed even if snapshot fails
+    }
+  }
+
+  const runToolOnce = async (): Promise<string> => {
+    const args = workingStep.args;
+    switch (workingStep.toolName) {
+      case "listSlides": {
+        const slides = await listSlides();
+        return JSON.stringify(slides);
+      }
+      case "readSlide": {
+        const detail = await readSlide(Number(args.slideNumber));
+        return JSON.stringify(detail);
+      }
+      case "getSelectedText": {
+        const text = await getSelectedText();
+        return text || "(No text selected)";
+      }
+      case "readSpeakerNotes": {
+        const notes = await readSpeakerNotes(Number(args.slideNumber));
+        return notes || "(No speaker notes on this slide)";
+      }
+      case "writeSpeakerNotes": {
+        return await writeSpeakerNotes(
+          Number(args.slideNumber),
+          String(args.notes || ""),
+          Boolean(args.append)
+        );
+      }
+      case "addSlide": {
+        const res = await addSlide({
+          title: String(args.title || "New Slide"),
+          bodyText: args.bodyText ? String(args.bodyText) : undefined,
+          layoutName: args.layoutName ? String(args.layoutName) : undefined,
+          notes: args.notes ? String(args.notes) : undefined,
+          settings,
+        });
+        if (workingStep.undoSnapshot) {
+          workingStep.undoSnapshot.slideIndex = res.slideIndex;
+          workingStep.undoSnapshot.createdSlideId = res.slideId;
+        }
+        return res.summary;
+      }
+      case "deleteSlide": {
+        return await deleteSlide(Number(args.slideNumber));
+      }
+      case "reorderSlide": {
+        return await reorderSlide(
+          Number(args.fromSlideNumber),
+          Number(args.toSlideNumber)
+        );
+      }
+      case "setSlideTitle": {
+        return await setSlideTitle(
+          Number(args.slideNumber),
+          String(args.title || ""),
+          settings
+        );
+      }
+      case "insertTextBox": {
+        return await insertTextBox({
+          slideNumber: Number(args.slideNumber),
+          text: String(args.text || ""),
+          left: args.left !== undefined ? Number(args.left) : undefined,
+          top: args.top !== undefined ? Number(args.top) : undefined,
+          width: args.width !== undefined ? Number(args.width) : undefined,
+          height: args.height !== undefined ? Number(args.height) : undefined,
+          isHeading: Boolean(args.isHeading),
+          settings,
+        });
+      }
+      case "replaceSlideText": {
+        return await replaceSlideText({
+          slideNumber: args.slideNumber ? Number(args.slideNumber) : undefined,
+          findText: String(args.findText || ""),
+          replaceWith: String(args.replaceWith ?? ""),
+          settings,
+        });
+      }
+      case "insertTable": {
+        let parsedRows: string[][] = [];
+        if (typeof args.rowsJson === "string") {
+          try {
+            parsedRows = JSON.parse(args.rowsJson);
+          } catch {
+            parsedRows = [[args.rowsJson]];
+          }
+        } else if (Array.isArray(args.rows)) {
+          parsedRows = args.rows as string[][];
+        }
+        const headers = Array.isArray(args.headers) ? args.headers.map(String) : [];
+        return await insertTable({
+          slideNumber: Number(args.slideNumber),
+          title: args.title ? String(args.title) : undefined,
+          headers,
+          rows: parsedRows,
+          settings,
+        });
+      }
+      case "insertImage": {
+        let base64 = String(args.base64Data || "");
+        if (!base64 || base64 === "attachment") {
+          const imgAtt = attachments.find((a) => a.kind === "image");
+          if (imgAtt) base64 = imgAtt.base64Data;
+        }
+        return await insertImage({
+          slideNumber: Number(args.slideNumber),
+          base64Data: base64,
+          left: args.left !== undefined ? Number(args.left) : undefined,
+          top: args.top !== undefined ? Number(args.top) : undefined,
+          width: args.width !== undefined ? Number(args.width) : undefined,
+          height: args.height !== undefined ? Number(args.height) : undefined,
+        });
+      }
+      case "formatSlideText": {
+        return await formatSlideText({
+          slideNumber: Number(args.slideNumber),
+          shapeId: args.shapeId ? String(args.shapeId) : undefined,
+          fontName: args.fontName ? String(args.fontName) : undefined,
+          fontSize: args.fontSize !== undefined ? Number(args.fontSize) : undefined,
+          fontColor: args.fontColor ? String(args.fontColor) : undefined,
+          bold: args.bold !== undefined ? Boolean(args.bold) : undefined,
+          italic: args.italic !== undefined ? Boolean(args.italic) : undefined,
+          alignment: args.alignment as "Left" | "Center" | "Right" | undefined,
+          direction: args.direction as "rtl" | "ltr" | undefined,
+          settings,
+        });
+      }
+      case "applySlideLayout": {
+        return await applySlideLayout({
+          slideNumber: Number(args.slideNumber),
+          layoutName: args.layoutName ? String(args.layoutName) : undefined,
+          primaryColor: args.primaryColor ? String(args.primaryColor) : undefined,
+          headingFont: args.headingFont ? String(args.headingFont) : undefined,
+          bodyFont: args.bodyFont ? String(args.bodyFont) : undefined,
+          settings,
+        });
+      }
+      default:
+        throw new Error(`Unknown agent tool: ${workingStep.toolName}`);
+    }
+  };
+
+  // Automatic transient retry (up to 1 automatic retry)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const output = await runToolOnce();
+      return {
+        ...workingStep,
+        status: "completed",
+        resultSummary: output,
+        errorMessage: undefined,
+      };
+    } catch (err) {
+      workingStep.retryCount = attempt + 1;
+      if (attempt === 1) {
+        return {
+          ...workingStep,
+          status: "failed",
+          errorMessage: err instanceof Error ? err.message : String(err),
+        };
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  return workingStep;
+}
+
+export async function undoCompletedAgentStep(step: AgentToolStep): Promise<AgentToolStep> {
+  if (!step.undoSnapshot) {
+    throw new Error("No undo snapshot recorded for this step.");
+  }
+  const summary = await restoreUndoSnapshot(step.undoSnapshot);
+  return {
+    ...step,
+    status: "undone",
+    resultSummary: summary,
+  };
+}
+
+export interface AgentLoopSession {
+  contents: GeminiTurnContent[];
+  steps: AgentToolStep[];
+  finalText: string;
+  awaitingApprovalStep?: AgentToolStep;
+  awaitingContinue: boolean;
+  stepLimitReached: boolean;
+}
+
+export async function runAgentLoop(options: {
+  settings: ZeeSettings;
+  history: ChatMessage[];
+  userPrompt: string;
+  attachments?: ChatAttachment[];
+  requirements: PowerPointApiRequirements;
+  existingSession?: AgentLoopSession;
+  maxAdditionalSteps?: number;
+  onUpdate: (session: AgentLoopSession) => void;
+  requestApproval: (step: AgentToolStep) => Promise<boolean>;
+  signal?: AbortSignal;
+}): Promise<AgentLoopSession> {
+  const presSummary = await getPresentationSummary();
+  const compactSummary = formatCompactPresentationSummary(presSummary);
+  const systemInstruction =
+    buildSystemInstruction(options.settings, compactSummary) +
+    "\n\nAGENT MODE RULES:\n" +
+    "- Use small, specific slide tools to inspect or modify the presentation.\n" +
+    "- Read-only tools (listSlides, readSlide, getSelectedText, readSpeakerNotes) run immediately.\n" +
+    "- Write tools require user approval via an approval card.\n" +
+    "- After completing the requested slide actions, provide a clear summary of what was done.";
+
+  const declarations = getSupportedAgentTools(options.requirements);
+  const maxStepsThisRun = options.maxAdditionalSteps || options.settings.agentMaxSteps || 8;
+
+  const session: AgentLoopSession = options.existingSession
+    ? {
+        ...options.existingSession,
+        awaitingContinue: false,
+        stepLimitReached: false,
+      }
+    : {
+        contents: buildGeminiContents(
+          options.history,
+          options.userPrompt,
+          options.attachments
+        ),
+        steps: [],
+        finalText: "",
+        awaitingContinue: false,
+        stepLimitReached: false,
+      };
+
+  let executedInRun = 0;
+
+  while (executedInRun < maxStepsThisRun) {
+    const turnResult = await generateGeminiTurn(options.settings, session.contents, {
+      systemInstruction,
+      functionDeclarations: declarations,
+      signal: options.signal,
+    });
+
+    if (turnResult.text) {
+      session.finalText = turnResult.text;
+    }
+
+    if (turnResult.functionCalls.length === 0) {
+      options.onUpdate({ ...session });
+      return session;
+    }
+
+    session.contents.push({
+      role: "model",
+      parts: turnResult.rawModelParts,
+    });
+
+    const responseParts: {
+      functionResponse: { name: string; response: Record<string, unknown> };
+    }[] = [];
+
+    for (const call of turnResult.functionCalls) {
+      if (executedInRun >= maxStepsThisRun) {
+        session.awaitingContinue = true;
+        session.stepLimitReached = true;
+        options.onUpdate({ ...session });
+        return session;
+      }
+
+      const stepNumber = session.steps.length + 1;
+      const needsApproval = requiresToolApproval(call.name);
+
+      let step: AgentToolStep = {
+        id: `step-${Date.now()}-${stepNumber}`,
+        stepNumber,
+        toolName: call.name,
+        args: call.args || {},
+        description: describeToolStep(call.name, call.args || {}),
+        requiresApproval: needsApproval,
+        status: needsApproval ? "pending_approval" : "running",
+        retryCount: 0,
+      };
+
+      session.steps.push(step);
+      options.onUpdate({ ...session, steps: [...session.steps] });
+
+      if (needsApproval) {
+        const approved = await options.requestApproval(step);
+        if (!approved) {
+          step = {
+            ...step,
+            status: "rejected",
+            resultSummary: "Skipped / rejected by user.",
+          };
+          session.steps[session.steps.length - 1] = step;
+          options.onUpdate({ ...session, steps: [...session.steps] });
+          responseParts.push({
+            functionResponse: {
+              name: call.name,
+              response: { status: "rejected", message: "User declined this action." },
+            },
+          });
+          executedInRun += 1;
+          continue;
+        }
+        step.status = "approved";
+      }
+
+      const finishedStep = await executeAgentToolStep(
+        step,
+        options.settings,
+        options.attachments
+      );
+      session.steps[session.steps.length - 1] = finishedStep;
+      options.onUpdate({ ...session, steps: [...session.steps] });
+
+      responseParts.push({
+        functionResponse: {
+          name: call.name,
+          response:
+            finishedStep.status === "completed"
+              ? { status: "ok", result: finishedStep.resultSummary }
+              : { status: "error", error: finishedStep.errorMessage },
+        },
+      });
+
+      executedInRun += 1;
+    }
+
+    session.contents.push({
+      role: "user",
+      parts: responseParts,
+    });
+  }
+
+  session.awaitingContinue = true;
+  session.stepLimitReached = true;
+  options.onUpdate({ ...session });
+  return session;
+}

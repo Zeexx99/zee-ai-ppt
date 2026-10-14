@@ -1,43 +1,33 @@
 {
   "name": "zee-ai-ppt",
-  "version": "1.0.0",
-  "description": "Zee AI for PowerPoint - Taskpane Add-in",
+  "version": "1.2.0",
   "private": true,
+  "description": "Zee AI for PowerPoint — AI Assistant & Agent Task-Pane Add-in for Microsoft PowerPoint",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build && node scripts/make-manifest.mjs",
-    "preview": "vite preview",
+    "dev": "vite --port 3300 --strictPort",
+    "build": "tsc --noEmit && vite build && node scripts/make-manifest.mjs",
+    "preview": "vite preview --port 3300 --strictPort",
     "test": "vitest run",
-    "validate": "office-addin-manifest validate manifest.xml",
-    "validate:prod": "office-addin-manifest validate manifest.prod.xml"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "make-manifest": "node scripts/make-manifest.mjs",
+    "generate-icons": "node scripts/generate-icons.mjs"
   },
-  "keywords": [
-    "office-addin",
-    "powerpoint",
-    "gemini",
-    "ai",
-    "zee-ai"
-  ],
-  "author": "Zeexx99",
-  "license": "MIT",
   "dependencies": {
-    "@fluentui/react-components": "^9.74.9",
-    "@fluentui/react-icons": "^2.0.344",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "@fluentui/react-components": "^9.54.0",
+    "@fluentui/react-icons": "^2.0.245",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@types/office-js": "^1.0.611",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-basic-ssl": "^2.3.0",
-    "@vitejs/plugin-react": "^6.1.2",
-    "happy-dom": "^21.0.1",
-    "office-addin-dev-certs": "^3.0.1",
-    "office-addin-manifest": "^3.0.1",
-    "typescript": "^7.0.2",
-    "vite": "^8.3.4",
-    "vitest": "^5.0.4"
+    "@types/node": "^20.14.0",
+    "@types/office-js": "^1.0.389",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.3",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.5"
   }
 }

@@ -3,23 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
     <title>Zee AI for PowerPoint</title>
-    <!-- Office.js CDN -->
-    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <link rel="icon" type="image/png" href="assets/icon-32.png" />
     <script>
-      // Pitfall fix: Auto-reload once if a stale chunk/cached build is detected
-      window.addEventListener('error', function(e) {
-        var msg = (e && e.message) ? e.message.toLowerCase() : '';
-        if (msg.includes('failed to fetch dynamically imported module') ||
-            msg.includes('loading chunk') ||
-            msg.includes('dynamically imported module')) {
-          var reloadKey = 'zee-ppt:auto-reloaded';
-          if (!sessionStorage.getItem(reloadKey)) {
-            sessionStorage.setItem(reloadKey, 'true');
-            window.location.reload();
-          }
-        }
-      });
+      // Preserve history methods that Office.js occasionally nulls out in WebView2/IE
+      window._savedReplaceState = window.history.replaceState;
+      window._savedPushState = window.history.pushState;
+    </script>
+    <script
+      type="text/javascript"
+      src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"
+    ></script>
+    <script>
+      if (!window.history.replaceState && window._savedReplaceState) {
+        window.history.replaceState = window._savedReplaceState;
+      }
+      if (!window.history.pushState && window._savedPushState) {
+        window.history.pushState = window._savedPushState;
+      }
     </script>
   </head>
   <body>

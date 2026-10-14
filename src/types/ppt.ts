@@ -1,47 +1,124 @@
-export interface SlideSummary {
-  id: string;
-  index: number; // 1-based display index
-  title: string;
-  contentSnippet: string;
-  shapeCount: number;
-  notes?: string;
-  isSelected?: boolean;
+export interface PowerPointApiRequirements {
+  isPowerPointHost: boolean;
+  pptApi1_1: boolean; // Basic slide creation
+  pptApi1_2: boolean; // insertSlidesFromBase64, delete slide
+  pptApi1_3: boolean; // Slide Masters, Custom Layouts, add slide with options
+  pptApi1_4: boolean; // Shapes, TextFrame, TextRange, formatting, geometric shapes, lines
+  pptApi1_5: boolean; // Selection of slides, shapes, text ranges
+  pptApi1_6: boolean; // Hyperlinks, slide reordering/move, background
+  pptApi1_7: boolean; // Speaker notes (Slide.notesSlide), document properties
+  pptApi1_8: boolean; // Tables API / advanced shape features
+  selectedTextCommonApi: boolean; // Office.context.document.getSelectedDataAsync / setSelectedDataAsync
+  imageCoercionSupported: boolean; // Office.CoercionType.Image
+  tableCoercionSupported: boolean; // Office.CoercionType.Table
 }
 
-export interface PresentationOverview {
+export interface ShapeInfo {
+  id: string;
+  name: string;
+  type: string;
+  text: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  fontName?: string;
+  fontSize?: number;
+  fontColor?: string;
+  isTitle?: boolean;
+}
+
+export interface SlideSummary {
+  index: number; // 1-based slide number
+  id: string;
+  title: string;
+  textPreview: string;
+  shapeCount: number;
+  layoutName?: string;
+  hasNotes?: boolean;
+}
+
+export interface SlideDetail {
+  index: number; // 1-based slide number
+  id: string;
+  title: string;
+  layoutName?: string;
+  shapes: ShapeInfo[];
+  speakerNotes: string;
+  fullText: string;
+}
+
+export interface PresentationSummary {
+  documentId: string;
   slideCount: number;
   activeSlideIndex: number;
   slides: SlideSummary[];
+  activeSlideDetail?: SlideDetail;
   selectedText?: string;
+  availableLayouts: string[];
 }
 
-export interface RequirementSetStatus {
-  hasApi11: boolean;
-  hasApi12: boolean;
-  hasApi13: boolean;
-  hasApi14: boolean;
-  hasApi15: boolean;
-  canFormatShapes: boolean;
-  canAddTables: boolean;
-  canManageNotes: boolean;
-  canInsertSlidesBase64: boolean;
-  highestVersion: string;
+export interface DeckOutlineSlide {
+  slideNumber: number;
+  title: string;
+  titleArabic?: string;
+  layout: "Title Slide" | "Title and Content" | "Two Content" | "Section Header" | "Summary Table";
+  bullets: string[];
+  bulletsArabic?: string[];
+  table?: {
+    headers: string[];
+    rows: string[][];
+  };
+  speakerNotes: string;
 }
 
-export interface TextFormatOptions {
-  fontName?: string;
-  fontSize?: number;
-  bold?: boolean;
-  italic?: boolean;
-  color?: string; // hex like #D24726
-  align?: 'Left' | 'Center' | 'Right' | 'Justify';
-  isRtl?: boolean;
+export interface DeckOutlinePlan {
+  deckTitle: string;
+  deckSubtitle?: string;
+  sourceSummary: string;
+  slides: DeckOutlineSlide[];
 }
 
-export interface TableInsertOptions {
-  rows: number;
-  columns: number;
-  headers?: string[];
-  data?: string[][];
-  title?: string;
+export type PetroleumResultCategory = "decline_curve" | "esp_analysis" | "production_qc" | "custom";
+
+export interface ExcelResultsPayload {
+  category: PetroleumResultCategory;
+  wellOrFieldName: string;
+  rawInputText: string;
+  slideTitle: string;
+  kpis: { label: string; value: string; status?: "normal" | "warning" | "critical" }[];
+  headers: string[];
+  rows: string[][];
+  takeaways: string[];
+  speakerNotes: string;
+  chartImageBase64?: string;
+}
+
+export interface ConsistencyIssue {
+  id: string;
+  slideIndex: number;
+  slideId: string;
+  shapeId?: string;
+  category: "font_family" | "font_size" | "title_case" | "units" | "protected_term";
+  severity: "warning" | "info";
+  description: string;
+  currentValue: string;
+  suggestedValue: string;
+  selected: boolean;
+}
+
+export interface TextFitIssue {
+  id: string;
+  slideIndex: number;
+  slideId: string;
+  shapeId: string;
+  shapeName: string;
+  originalText: string;
+  lineCount: number;
+  wordCount: number;
+  boxHeightPt: number;
+  estimatedOverflowRatio: number;
+  shortenedText?: string;
+  recommendedFontSize?: number;
+  selected: boolean;
 }

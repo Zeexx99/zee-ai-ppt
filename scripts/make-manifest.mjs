@@ -1,35 +1,54 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import { readFileSync, writeFileSync, existsSync, copyFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const devManifestPath = path.resolve('manifest.xml');
-const prodManifestPath = path.resolve('manifest.prod.xml');
-const distDir = path.resolve('dist');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const rootDir = join(__dirname, "..");
 
-if (!fs.existsSync(devManifestPath)) {
-  console.error('Error: manifest.xml not found!');
-  process.exit(1);
+const devManifestPath = join(rootDir, "manifest.xml");
+const prodManifestPath = join(rootDir, "manifest.prod.xml");
+const distDir = join(rootDir, "dist");
+
+const HOSTED_BASE_URL =
+  process.env.ZEE_PPT_HOST_URL || "https://zeexx99.github.io/zee-ai-ppt";
+
+function validateManifestXml(xml, label) {
+  const errors = [];
+  if (!/<Id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}<\/Id>/.test(xml)) {
+    errors.push(`${label}: Missing or invalid GUID <Id>`);
+  }
+  if (!/<Host\s+Name="Presentation"\s*\/>/.test(xml)) {
+    errors.push(`${label}: Missing <Host Name="Presentation"/>`);
+  }
+  if (!/<Host\s+xsi:type="Presentation"\s*>/.test(xml)) {
+    errors.push(`${label}: Missing <Host xsi:type="Presentation"> in VersionOverrides`);
+  }
+  if (!/<OfficeTab\s+id="TabHome"\s*>/.test(xml)) {
+    errors.push(`${label}: Missing <OfficeTab id="TabHome">`);
+  }
+  if (!/<TaskpaneId>ZeeAI\.PPT\.Taskpane<\/TaskpaneId>/.test(xml)) {
+    errors.push(`${label}: TaskpaneId must be ZeeAI.PPT.Taskpane`);
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join("\n"));
+  }
 }
 
-let content = fs.readFileSync(devManifestPath, 'utf8');
+const devXml = readFileSync(devManifestPath, "utf-8");
+validateManifestXml(devXml, "manifest.xml");
 
-// Replace local dev URLs with production GitHub Pages URL
-content = content
-  .replaceAll('https://localhost:3300/', 'https://zeexx99.github.io/zee-ai-ppt/')
-  .replaceAll('https://localhost:3300', 'https://zeexx99.github.io/zee-ai-ppt');
+const normalizedBase = HOSTED_BASE_URL.replace(/\/+$/, "");
+const prodXml = devXml
+  .replace(/<AppDomain>https:\/\/localhost:3300<\/AppDomain>\s*/g, "")
+  .replace(/https:\/\/localhost:3300/g, normalizedBase);
 
-// Add zeexx99.github.io to AppDomains if needed
-if (!content.includes('https://zeexx99.github.io')) {
-  content = content.replace(
-    '</AppDomains>',
-    '  <AppDomain>https://zeexx99.github.io</AppDomain>\n  </AppDomains>'
-  );
-}
+validateManifestXml(prodXml, "manifest.prod.xml");
 
-fs.writeFileSync(prodManifestPath, content, 'utf8');
-console.log(`Created ${prodManifestPath}`);
+writeFileSync(prodManifestPath, prodXml, "utf-8");
+console.log(`Generated ${prodManifestPath} -> ${normalizedBase}/`);
 
-if (fs.existsSync(distDir)) {
-  const distManifestPath = path.join(distDir, 'manifest.xml');
-  fs.writeFileSync(distManifestPath, content, 'utf8');
-  console.log(`Copied to ${distManifestPath}`);
+if (existsSync(distDir)) {
+  copyFileSync(prodManifestPath, join(distDir, "manifest.xml"));
+  copyFileSync(prodManifestPath, join(distDir, "manifest.prod.xml"));
+  console.log("Copied manifest.prod.xml to dist/manifest.xml and dist/manifest.prod.xml");
 }

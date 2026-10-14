@@ -1,475 +1,561 @@
-import React, { useState } from 'react';
+import React, { useState } from "react";
 import {
-  Drawer,
-  DrawerHeader,
-  DrawerHeaderTitle,
-  DrawerBody,
+  Badge,
   Button,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
   Input,
   Label,
-  Switch,
   Select,
-  Field,
-  Divider,
-  Tag,
-  TagGroup,
-  Badge,
-  TabList,
-  Tab,
-  TabValue
-} from '@fluentui/react-components';
+  Switch,
+} from "@fluentui/react-components";
+import { Dismiss20Regular } from "@fluentui/react-icons";
 import {
-  Dismiss24Regular,
-  Save24Regular,
-  Key24Regular,
-  ShieldCheckmark24Regular,
-  Globe24Regular,
-  TextDirectionHorizontalLtr24Regular,
-  Eye24Regular,
-  EyeOff24Regular,
-  Delete24Regular
-} from '@fluentui/react-icons';
-import { AppSettings, ArabicFontChoice, DarkModeSetting, DEFAULT_PROTECTED_TERMS } from '../types/settings';
-import { RequirementSetStatus } from '../types/ppt';
-import { authService } from '../services/authService';
+  APP_VERSION,
+  ARABIC_FONT_PRESETS,
+  ArabicFontPreset,
+  AppearanceMode,
+  AuthMode,
+  AVAILABLE_MODELS,
+  BUILD_DATE,
+  DEFAULT_PROTECTED_TERMS,
+  DirectionMode,
+  ZeeSettings,
+} from "../types/settings";
+import { PowerPointApiRequirements } from "../types/ppt";
+import { startGoogleOAuthSignIn } from "../services/authService";
 
 interface SettingsDrawerProps {
-  isOpen: boolean;
+  open: boolean;
+  settings: ZeeSettings;
+  requirements: PowerPointApiRequirements;
+  availableLayouts: string[];
   onClose: () => void;
-  settings: AppSettings;
-  onSave: (updated: AppSettings) => void;
-  requirementStatus: RequirementSetStatus;
+  onUpdateSettings: (partial: Partial<ZeeSettings>) => void;
 }
 
 export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
-  isOpen,
-  onClose,
+  open,
   settings,
-  onSave,
-  requirementStatus
+  requirements,
+  availableLayouts,
+  onClose,
+  onUpdateSettings,
 }) => {
-  const [formData, setFormData] = useState<AppSettings>({ ...settings });
-  const [showKey, setShowKey] = useState(false);
-  const [newTerm, setNewTerm] = useState('');
-  const [activeTab, setActiveTab] = useState<TabValue>('connection');
-  const [authStatus, setAuthStatus] = useState<string>('');
+  const [oauthStatus, setOauthStatus] = useState<string>("");
+  const [customTermInput, setCustomTermInput] = useState<string>(
+    settings.customProtectedTerms.join(", ")
+  );
 
-  // Sync if settings change externally
-  React.useEffect(() => {
-    setFormData({ ...settings });
-  }, [settings]);
-
-  const handleChange = <K extends keyof AppSettings>(key: K, val: AppSettings[K]) => {
-    setFormData(prev => ({ ...prev, [key]: val }));
-  };
-
-  const handleSaveAndClose = () => {
-    onSave(formData);
-    onClose();
-  };
-
-  const handleAddTerm = () => {
-    const trimmed = newTerm.trim();
-    if (trimmed && !formData.protectedTerms.includes(trimmed)) {
-      setFormData(prev => ({
-        ...prev,
-        protectedTerms: [...prev.protectedTerms, trimmed]
-      }));
-      setNewTerm('');
+  const handleOAuthClick = async () => {
+    setOauthStatus("Opening Google Sign-In...");
+    try {
+      const res = await startGoogleOAuthSignIn(settings.googleOAuthClientId);
+      onUpdateSettings({
+        oauthAccessToken: res.accessToken,
+        oauthExpiry: Date.now() + res.expiresIn * 1000,
+      });
+      setOauthStatus("✓ Signed in with Google OAuth!");
+    } catch (err) {
+      setOauthStatus(
+        `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   };
 
-  const handleRemoveTerm = (termToRemove: string) => {
-    setFormData(prev => ({
-      ...prev,
-      protectedTerms: prev.protectedTerms.filter(t => t !== termToRemove)
-    }));
-  };
-
-  const handleResetTerms = () => {
-    setFormData(prev => ({
-      ...prev,
-      protectedTerms: [...DEFAULT_PROTECTED_TERMS]
-    }));
-  };
-
-  const handleGoogleSignIn = async () => {
-    setAuthStatus('Connecting to Google...');
-    const res = await authService.signInWithGoogle(formData.googleClientId);
-    if (res.token) {
-      handleChange('googleAuthToken', res.token);
-      setAuthStatus('Signed in successfully!');
-    } else {
-      setAuthStatus(`Sign-in failed: ${res.error || 'Unknown error'}`);
-    }
-  };
-
-  const handleSignOutGoogle = () => {
-    handleChange('googleAuthToken', '');
-    setAuthStatus('Signed out.');
+  const handleCustomTermsBlur = () => {
+    const parsed = customTermInput
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    onUpdateSettings({ customProtectedTerms: parsed });
   };
 
   return (
-    <Drawer
-      type="overlay"
-      position="end"
-      open={isOpen}
-      onOpenChange={(_, data) => !data.open && onClose()}
-      style={{ width: '340px', maxWidth: '90vw' }}
-    >
-      <DrawerHeader style={{ borderBottom: '1px solid rgba(128,128,128,0.2)' }}>
-        <DrawerHeaderTitle
-          action={
-            <Button
-              appearance="subtle"
-              aria-label="Close"
-              icon={<Dismiss24Regular />}
-              onClick={onClose}
-            />
-          }
-        >
-          Zee AI Settings
-        </DrawerHeaderTitle>
-      </DrawerHeader>
+    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
+      <DialogSurface style={{ maxWidth: 440, width: "94vw", maxHeight: "90vh" }}>
+        <DialogBody>
+          <DialogTitle
+            action={
+              <Button
+                appearance="subtle"
+                aria-label="Close settings"
+                icon={<Dismiss20Regular />}
+                onClick={onClose}
+              />
+            }
+          >
+            Zee AI Settings
+          </DialogTitle>
 
-      <TabList
-        selectedValue={activeTab}
-        onTabSelect={(_, data) => setActiveTab(data.value)}
-        style={{ padding: '0 8px', borderBottom: '1px solid rgba(128,128,128,0.1)' }}
-      >
-        <Tab value="connection">AI & Auth</Tab>
-        <Tab value="presentation">Slides & RTL</Tab>
-        <Tab value="advanced">Advanced</Tab>
-      </TabList>
-
-      <DrawerBody style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        {activeTab === 'connection' && (
-          <>
-            {/* Gemini API Key */}
-            <Field label="Gemini API Key" hint="Stored locally on this PC only">
-              <div style={{ display: 'flex', gap: '4px' }}>
-                <Input
-                  type={showKey ? 'text' : 'password'}
-                  value={formData.geminiApiKey}
-                  onChange={(_, data) => handleChange('geminiApiKey', data.value)}
-                  placeholder="AIzaSy..."
-                  style={{ flex: 1 }}
-                />
-                <Button
-                  appearance="subtle"
-                  icon={showKey ? <EyeOff24Regular /> : <Eye24Regular />}
-                  onClick={() => setShowKey(!showKey)}
-                  aria-label="Toggle API key visibility"
-                />
+          <DialogContent
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+              overflowY: "auto",
+              maxHeight: "72vh",
+              paddingRight: 4,
+              fontSize: 12,
+            }}
+          >
+            {/* 1. AI Connection */}
+            <section
+              style={{
+                border: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                borderRadius: 8,
+                padding: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, color: "#b73618" }}>
+                1. AI Connection (Gemini)
               </div>
-            </Field>
 
-            <Divider style={{ margin: '4px 0' }} />
-
-            {/* Cloudflare Team Proxy */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <Label weight="semibold">Team Proxy (Cloudflare Worker)</Label>
-              <Input
-                placeholder="https://zee-proxy.workers.dev"
-                value={formData.teamProxyUrl}
-                onChange={(_, data) => handleChange('teamProxyUrl', data.value)}
-              />
-              <Input
-                type="password"
-                placeholder="Team Proxy Token (optional)"
-                value={formData.teamProxyToken}
-                onChange={(_, data) => handleChange('teamProxyToken', data.value)}
-              />
-              <span style={{ fontSize: '11px', color: 'var(--colorNeutralForeground3)' }}>
-                Allows using a shared server key with origin locking and rate limits.
-              </span>
-            </div>
-
-            <Divider style={{ margin: '4px 0' }} />
-
-            {/* Google OAuth Sign-in */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <Label weight="semibold">Google Account (Optional)</Label>
-              <Input
-                placeholder="Google OAuth Client ID"
-                value={formData.googleClientId}
-                onChange={(_, data) => handleChange('googleClientId', data.value)}
-              />
-              {formData.googleAuthToken ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <Badge color="success">Signed in</Badge>
-                  <Button size="small" appearance="subtle" onClick={handleSignOutGoogle}>
-                    Sign Out
-                  </Button>
-                </div>
-              ) : (
-                <Button size="small" appearance="secondary" onClick={handleGoogleSignIn}>
-                  Sign in with Google
-                </Button>
-              )}
-              {authStatus && (
-                <span style={{ fontSize: '11px', color: 'var(--colorNeutralForeground3)' }}>
-                  {authStatus}
-                </span>
-              )}
-            </div>
-
-            <Divider style={{ margin: '4px 0' }} />
-
-            {/* Model Selection */}
-            <Field label="Gemini Model">
-              <Select
-                value={formData.model}
-                onChange={e => handleChange('model', e.target.value)}
-              >
-                <option value="gemini-2.5-flash">Gemini 2.5 Flash (Fastest, Recommended)</option>
-                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep reasoning)</option>
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-              </Select>
-            </Field>
-          </>
-        )}
-
-        {activeTab === 'presentation' && (
-          <>
-            {/* Arabic & RTL */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <Label weight="semibold">Arabic & Direction</Label>
-              <Switch
-                label="Auto RTL Direction & Right Alignment"
-                checked={formData.autoRtl}
-                onChange={(_, data) => handleChange('autoRtl', data.checked)}
-              />
-              <Switch
-                label="Bilingual Mode (English + Arabic output)"
-                checked={formData.bilingualMode}
-                onChange={(_, data) => handleChange('bilingualMode', data.checked)}
-              />
-
-              <Field label="Arabic Font Preset">
+              <div>
+                <Label size="small">Authentication Method</Label>
                 <Select
-                  value={formData.arabicFont}
-                  onChange={e => handleChange('arabicFont', e.target.value as ArabicFontChoice)}
-                >
-                  <option value="Same as document">Same as document</option>
-                  <option value="Simplified Arabic">Simplified Arabic</option>
-                  <option value="Traditional Arabic">Traditional Arabic</option>
-                  <option value="Sakkal Majalla">Sakkal Majalla</option>
-                  <option value="Segoe UI">Segoe UI</option>
-                  <option value="Cairo">Cairo</option>
-                </Select>
-              </Field>
-            </div>
-
-            <Divider style={{ margin: '4px 0' }} />
-
-            {/* Protected Terms */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Label weight="semibold">Protected Terms & Units</Label>
-                <Button size="small" appearance="transparent" onClick={handleResetTerms}>
-                  Reset
-                </Button>
-              </div>
-              <span style={{ fontSize: '11px', color: 'var(--colorNeutralForeground3)' }}>
-                These terms will never be translated, altered, or lowercased.
-              </span>
-              <div style={{ display: 'flex', gap: '4px' }}>
-                <Input
                   size="small"
-                  placeholder="Add acronym/well (e.g. ESP)"
-                  value={newTerm}
-                  onChange={(_, data) => setNewTerm(data.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleAddTerm()}
-                  style={{ flex: 1 }}
-                />
-                <Button size="small" onClick={handleAddTerm}>
-                  Add
-                </Button>
+                  value={settings.authMode}
+                  onChange={(_, d) => onUpdateSettings({ authMode: d.value as AuthMode })}
+                >
+                  <option value="apiKey">Gemini API Key (Local per PC)</option>
+                  <option value="proxy">Cloudflare Team Proxy (Shared Server Key)</option>
+                  <option value="oauth">Google OAuth Sign-In</option>
+                </Select>
               </div>
-              <div
-                style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '4px',
-                  maxHeight: '120px',
-                  overflowY: 'auto',
-                  padding: '4px',
-                  border: '1px solid rgba(128,128,128,0.2)',
-                  borderRadius: '4px'
-                }}
-              >
-                {formData.protectedTerms.map(term => (
-                  <Tag
-                    key={term}
+
+              {settings.authMode === "apiKey" && (
+                <div>
+                  <Label size="small">Gemini API Key</Label>
+                  <Input
                     size="small"
-                    dismissible
-                    dismissIcon={<Dismiss24Regular />}
-                    onClick={() => handleRemoveTerm(term)}
-                  >
-                    {term}
-                  </Tag>
-                ))}
-              </div>
-            </div>
-
-            <Divider style={{ margin: '4px 0' }} />
-
-            {/* Company Template Mode */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <Label weight="semibold">Company Template Mode</Label>
-              <Switch
-                label="Apply Brand Guidelines"
-                checked={formData.companyTemplate.enabled}
-                onChange={(_, data) =>
-                  setFormData(prev => ({
-                    ...prev,
-                    companyTemplate: { ...prev.companyTemplate, enabled: data.checked }
-                  }))
-                }
-              />
-              {formData.companyTemplate.enabled && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingLeft: '8px' }}>
-                  <Field label="Brand Font">
-                    <Input
-                      size="small"
-                      value={formData.companyTemplate.brandFont}
-                      onChange={(_, d) =>
-                        setFormData(p => ({
-                          ...p,
-                          companyTemplate: { ...p.companyTemplate, brandFont: d.value }
-                        }))
-                      }
-                    />
-                  </Field>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <Field label="Title Color" style={{ flex: 1 }}>
-                      <Input
-                        size="small"
-                        value={formData.companyTemplate.primaryColor}
-                        onChange={(_, d) =>
-                          setFormData(p => ({
-                            ...p,
-                            companyTemplate: { ...p.companyTemplate, primaryColor: d.value }
-                          }))
-                        }
-                      />
-                    </Field>
-                    <Field label="Accent Color" style={{ flex: 1 }}>
-                      <Input
-                        size="small"
-                        value={formData.companyTemplate.accentColor}
-                        onChange={(_, d) =>
-                          setFormData(p => ({
-                            ...p,
-                            companyTemplate: { ...p.companyTemplate, accentColor: d.value }
-                          }))
-                        }
-                      />
-                    </Field>
+                    type="password"
+                    style={{ width: "100%" }}
+                    placeholder="AIzaSy..."
+                    value={settings.geminiApiKey}
+                    onChange={(_, d) => onUpdateSettings({ geminiApiKey: d.value })}
+                  />
+                  <div style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}>
+                    Stored locally on this PC under <code>zee-ppt:settings</code>.
                   </div>
                 </div>
               )}
-            </div>
-          </>
-        )}
 
-        {activeTab === 'advanced' && (
-          <>
-            {/* Appearance */}
-            <Field label="Appearance">
-              <Select
-                value={formData.darkMode}
-                onChange={e => handleChange('darkMode', e.target.value as DarkModeSetting)}
-              >
-                <option value="auto">Auto (Match Office / System)</option>
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-              </Select>
-            </Field>
-
-            <Divider style={{ margin: '4px 0' }} />
-
-            {/* Gemini Tools & Cost Guard */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <Label weight="semibold">Tools & Safety</Label>
-              <Switch
-                label="Google Web Search"
-                checked={formData.webSearch}
-                onChange={(_, data) => handleChange('webSearch', data.checked)}
-              />
-              <Switch
-                label="Python Code Execution"
-                checked={formData.codeExecution}
-                onChange={(_, data) => handleChange('codeExecution', data.checked)}
-              />
-              <Switch
-                label="Cost Guard Token Warning"
-                checked={formData.costGuardEnabled}
-                onChange={(_, data) => handleChange('costGuardEnabled', data.checked)}
-              />
-              {formData.costGuardEnabled && (
-                <Field label="Token Warning Threshold" hint="Warns before sending very large prompts">
-                  <Input
-                    type="number"
-                    size="small"
-                    value={String(formData.costGuardThreshold)}
-                    onChange={(_, data) => handleChange('costGuardThreshold', Number(data.value) || 12000)}
-                  />
-                </Field>
+              {settings.authMode === "proxy" && (
+                <>
+                  <div>
+                    <Label size="small">Cloudflare Team Proxy URL</Label>
+                    <Input
+                      size="small"
+                      style={{ width: "100%" }}
+                      placeholder="https://zee-ai-proxy.your-team.workers.dev"
+                      value={settings.proxyUrl}
+                      onChange={(_, d) => onUpdateSettings({ proxyUrl: d.value })}
+                    />
+                  </div>
+                  <div>
+                    <Label size="small">Team Proxy Token</Label>
+                    <Input
+                      size="small"
+                      type="password"
+                      style={{ width: "100%" }}
+                      placeholder="Your personal team token"
+                      value={settings.proxyToken}
+                      onChange={(_, d) => onUpdateSettings({ proxyToken: d.value })}
+                    />
+                  </div>
+                </>
               )}
-              <Field label="Agent Step Limit" hint="Requires clicking 'Continue' after this many actions">
-                <Input
-                  type="number"
+
+              {settings.authMode === "oauth" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <Label size="small">Google OAuth Client ID</Label>
+                  <Input
+                    size="small"
+                    style={{ width: "100%" }}
+                    placeholder="123456789-abc.apps.googleusercontent.com"
+                    value={settings.googleOAuthClientId}
+                    onChange={(_, d) =>
+                      onUpdateSettings({ googleOAuthClientId: d.value })
+                    }
+                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Button
+                      size="small"
+                      appearance="primary"
+                      onClick={handleOAuthClick}
+                      style={{ backgroundColor: "#b73618" }}
+                    >
+                      Sign in with Google
+                    </Button>
+                    {settings.oauthAccessToken && (
+                      <Badge color="success" appearance="tint">
+                        Token Active
+                      </Badge>
+                    )}
+                  </div>
+                  {oauthStatus && <div style={{ fontSize: 11 }}>{oauthStatus}</div>}
+                </div>
+              )}
+
+              <div>
+                <Label size="small">Gemini Model</Label>
+                <Select
                   size="small"
-                  value={String(formData.maxAgentSteps)}
-                  onChange={(_, data) => handleChange('maxAgentSteps', Number(data.value) || 5)}
-                />
-              </Field>
-            </div>
-
-            <Divider style={{ margin: '4px 0' }} />
-
-            {/* PowerPoint API Diagnostic Status */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <Label weight="semibold">PowerPointApi Capability Status</Label>
-              <div
-                style={{
-                  fontSize: '11px',
-                  background: 'var(--colorNeutralBackground3)',
-                  padding: '8px',
-                  borderRadius: '4px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '4px'
-                }}
-              >
-                <div>Highest Api Set: <b>{requirementStatus.highestVersion}</b></div>
-                <div>Shape & Text Formatting (1.3+): {requirementStatus.canFormatShapes ? '✅ Supported' : '❌ Limited'}</div>
-                <div>Tables Creation (1.4+): {requirementStatus.canAddTables ? '✅ Supported' : '❌ Hidden'}</div>
-                <div>Speaker Notes Access (1.5+): {requirementStatus.canManageNotes ? '✅ Supported' : '❌ Hidden'}</div>
-                <div>Base64 Slides (1.2+): {requirementStatus.canInsertSlidesBase64 ? '✅ Supported' : '❌ Limited'}</div>
+                  value={settings.model}
+                  onChange={(_, d) => onUpdateSettings({ model: d.value })}
+                >
+                  {AVAILABLE_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </Select>
               </div>
-            </div>
-          </>
-        )}
+            </section>
 
-        {/* Footer with save button & version */}
-        <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', paddingTop: '12px' }}>
-          <Button
-            appearance="primary"
-            icon={<Save24Regular />}
-            onClick={handleSaveAndClose}
-            style={{ width: '100%' }}
-          >
-            Save Settings
-          </Button>
-          <div style={{ textAlign: 'center', fontSize: '10px', color: 'var(--colorNeutralForeground4)' }}>
-            Zee AI for PowerPoint • v1.0.0 (Oct 2026)
-          </div>
-        </div>
-      </DrawerBody>
-    </Drawer>
+            {/* 2. Arabic, RTL, Protected Terms & Bilingual Mode */}
+            <section
+              style={{
+                border: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                borderRadius: 8,
+                padding: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, color: "#b73618" }}>
+                2. Arabic / English Direction &amp; Protected Terms
+              </div>
+
+              <div>
+                <Label size="small">Paragraph Direction &amp; Alignment</Label>
+                <Select
+                  size="small"
+                  value={settings.directionMode}
+                  onChange={(_, d) =>
+                    onUpdateSettings({ directionMode: d.value as DirectionMode })
+                  }
+                >
+                  <option value="auto">
+                    Auto (Arabic → RTL &amp; Right-Aligned, English → LTR &amp; Left-Aligned)
+                  </option>
+                  <option value="rtl">Force Right-to-Left (RTL)</option>
+                  <option value="ltr">Force Left-to-Right (LTR)</option>
+                </Select>
+              </div>
+
+              <Switch
+                checked={settings.centerHeadings}
+                onChange={(_, d) => onUpdateSettings({ centerHeadings: d.checked })}
+                label="Center slide headings automatically"
+              />
+
+              <div>
+                <Label size="small">Arabic Font Preset</Label>
+                <Select
+                  size="small"
+                  value={settings.arabicFont}
+                  onChange={(_, d) =>
+                    onUpdateSettings({ arabicFont: d.value as ArabicFontPreset })
+                  }
+                >
+                  {ARABIC_FONT_PRESETS.map((font) => (
+                    <option key={font} value={font}>
+                      {font}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <Switch
+                checked={settings.bilingualMode}
+                onChange={(_, d) => onUpdateSettings({ bilingualMode: d.checked })}
+                label="Bilingual Mode (English + Arabic output)"
+              />
+
+              <Switch
+                checked={settings.protectTermsEnabled}
+                onChange={(_, d) =>
+                  onUpdateSettings({ protectTermsEnabled: d.checked })
+                }
+                label="Keep Protected Terms unchanged (ESP, TDH, PIP, GOR, BHP, bbl/d, well names)"
+              />
+
+              {settings.protectTermsEnabled && (
+                <div>
+                  <Label size="small">
+                    Extra Custom Protected Terms (comma-separated)
+                  </Label>
+                  <Input
+                    size="small"
+                    style={{ width: "100%" }}
+                    placeholder="e.g. SCADA, VSD, Arps, Well-19"
+                    value={customTermInput}
+                    onChange={(_, d) => setCustomTermInput(d.value)}
+                    onBlur={handleCustomTermsBlur}
+                  />
+                  <div style={{ fontSize: 10, opacity: 0.7, marginTop: 3 }}>
+                    Built-in: {DEFAULT_PROTECTED_TERMS.slice(0, 12).join(", ")} + well names &amp; units
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* 3. Company Template Mode */}
+            <section
+              style={{
+                border: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                borderRadius: 8,
+                padding: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, color: "#b73618" }}>
+                3. Company Template Mode
+              </div>
+
+              <Switch
+                checked={settings.companyTemplate.enabled}
+                onChange={(_, d) =>
+                  onUpdateSettings({
+                    companyTemplate: {
+                      ...settings.companyTemplate,
+                      enabled: d.checked,
+                    },
+                  })
+                }
+                label="Always build & format slides with Company Template"
+              />
+
+              {settings.companyTemplate.enabled && (
+                <>
+                  <div>
+                    <Label size="small">Preferred Master Layout</Label>
+                    <Select
+                      size="small"
+                      value={settings.companyTemplate.layoutName}
+                      onChange={(_, d) =>
+                        onUpdateSettings({
+                          companyTemplate: {
+                            ...settings.companyTemplate,
+                            layoutName: d.value,
+                          },
+                        })
+                      }
+                    >
+                      {availableLayouts.map((layout) => (
+                        <option key={layout} value={layout}>
+                          {layout}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    <div>
+                      <Label size="small">Heading Font</Label>
+                      <Input
+                        size="small"
+                        value={settings.companyTemplate.headingFont}
+                        onChange={(_, d) =>
+                          onUpdateSettings({
+                            companyTemplate: {
+                              ...settings.companyTemplate,
+                              headingFont: d.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label size="small">Body Font</Label>
+                      <Input
+                        size="small"
+                        value={settings.companyTemplate.bodyFont}
+                        onChange={(_, d) =>
+                          onUpdateSettings({
+                            companyTemplate: {
+                              ...settings.companyTemplate,
+                              bodyFont: d.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    <div>
+                      <Label size="small">Primary Brand Color</Label>
+                      <Input
+                        size="small"
+                        value={settings.companyTemplate.primaryColor}
+                        onChange={(_, d) =>
+                          onUpdateSettings({
+                            companyTemplate: {
+                              ...settings.companyTemplate,
+                              primaryColor: d.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label size="small">Slide Footer Text</Label>
+                      <Input
+                        size="small"
+                        value={settings.companyTemplate.footerText}
+                        onChange={(_, d) =>
+                          onUpdateSettings({
+                            companyTemplate: {
+                              ...settings.companyTemplate,
+                              footerText: d.value,
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+            </section>
+
+            {/* 4. Appearance, Cost Guard & Agent */}
+            <section
+              style={{
+                border: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                borderRadius: 8,
+                padding: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, color: "#b73618" }}>
+                4. Appearance, Cost Guard &amp; Agent
+              </div>
+
+              <div>
+                <Label size="small">Appearance Theme</Label>
+                <Select
+                  size="small"
+                  value={settings.appearance}
+                  onChange={(_, d) =>
+                    onUpdateSettings({ appearance: d.value as AppearanceMode })
+                  }
+                >
+                  <option value="auto">Auto (Follow System/Office)</option>
+                  <option value="light">Light Mode</option>
+                  <option value="dark">Dark Mode</option>
+                </Select>
+              </div>
+
+              <Switch
+                checked={settings.costGuardEnabled}
+                onChange={(_, d) =>
+                  onUpdateSettings({ costGuardEnabled: d.checked })
+                }
+                label="Cost Guard: warn before sending large prompts"
+              />
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                <div>
+                  <Label size="small">Cost Guard Limit (tokens)</Label>
+                  <Input
+                    size="small"
+                    type="number"
+                    value={String(settings.costGuardTokenLimit)}
+                    onChange={(_, d) =>
+                      onUpdateSettings({
+                        costGuardTokenLimit: Math.max(1000, Number(d.value) || 12000),
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label size="small">Agent Step Limit</Label>
+                  <Input
+                    size="small"
+                    type="number"
+                    value={String(settings.agentMaxSteps)}
+                    onChange={(_, d) =>
+                      onUpdateSettings({
+                        agentMaxSteps: Math.max(2, Math.min(20, Number(d.value) || 8)),
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* 5. Version, Build Date & Requirement Set Diagnostics */}
+            <section
+              style={{
+                border: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                borderRadius: 8,
+                padding: 10,
+                fontSize: 11,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
+                <span>Zee AI for PowerPoint v{APP_VERSION}</span>
+                <span>Build: {BUILD_DATE}</span>
+              </div>
+              <div style={{ opacity: 0.78 }}>
+                Host: {requirements.isPowerPointHost ? "Microsoft PowerPoint" : "Browser Preview Mode"} |
+                Storage prefix: <code>zee-ppt:</code>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                {(
+                  [
+                    ["1.1", requirements.pptApi1_1],
+                    ["1.2", requirements.pptApi1_2],
+                    ["1.3", requirements.pptApi1_3],
+                    ["1.4", requirements.pptApi1_4],
+                    ["1.5", requirements.pptApi1_5],
+                    ["1.6", requirements.pptApi1_6],
+                    ["1.7", requirements.pptApi1_7],
+                    ["1.8", requirements.pptApi1_8],
+                  ] as [string, boolean][]
+                ).map(([ver, ok]) => (
+                  <Badge
+                    key={ver}
+                    size="extra-small"
+                    appearance="tint"
+                    color={ok ? "success" : "subtle"}
+                  >
+                    PPT {ver}: {ok ? "✓" : "–"}
+                  </Badge>
+                ))}
+              </div>
+            </section>
+          </DialogContent>
+
+          <DialogActions>
+            <Button
+              appearance="primary"
+              onClick={onClose}
+              style={{ backgroundColor: "#b73618" }}
+            >
+              Done
+            </Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
   );
 };

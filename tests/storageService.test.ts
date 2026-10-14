@@ -1,53 +1,117 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { storageService } from '../src/services/storageService';
-import { DEFAULT_SETTINGS } from '../src/types/settings';
-import { ChatMessage } from '../src/types/chat';
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  getStorageKey,
+  loadChatHistory,
+  loadSavedPrompts,
+  loadSettings,
+  normalizeDocHistoryKey,
+  saveChatHistory,
+  saveCustomPrompts,
+  saveSettings,
+  trimChatHistory,
+} from "../src/services/storageService";
+import { DEFAULT_SETTINGS, STORAGE_PREFIX } from "../src/types/settings";
+import { ChatMessage } from "../src/types/chat";
 
-describe('storageService', () => {
+function setupMockLocalStorage() {
+  const store = new Map<string, string>();
+  const mock: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    getItem(key: string) {
+      return store.has(key) ? store.get(key)! : null;
+    },
+    key(index: number) {
+      return Array.from(store.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+    setItem(key: string, value: string) {
+      store.set(key, String(value));
+    },
+  };
+  (globalThis as any).localStorage = mock;
+}
+
+describe("storageService", () => {
   beforeEach(() => {
-    localStorage.clear();
+    setupMockLocalStorage();
   });
 
-  it('retrieves default settings when nothing is stored', () => {
-    const s = storageService.getSettings();
-    expect(s.model).toBe('gemini-2.5-flash');
-    expect(s.protectedTerms).toContain('ESP');
-    expect(s.protectedTerms).toContain('TDH');
+  it("enforces the zee-ppt: storage key prefix so nothing collides with Excel/Word", () => {
+    expect(STORAGE_PREFIX).toBe("zee-ppt:");
+    expect(getStorageKey("settings")).toBe("zee-ppt:settings");
+    expect(normalizeDocHistoryKey("North Field Q3 Review.pptx")).toMatch(
+      /^zee-ppt:history:/
+    );
   });
 
-  it('saves and retrieves updated settings using zee-ppt: prefix', () => {
-    const custom = {
-      ...DEFAULT_SETTINGS,
-      geminiApiKey: 'test-api-key-12345',
-      autoRtl: false
-    };
+  it("saves and loads settings with company template defaults", () => {
+    const initial = loadSettings();
+    expect(initial.model).toBe(DEFAULT_SETTINGS.model);
 
-    storageService.saveSettings(custom);
-    expect(localStorage.getItem('zee-ppt:settings')).toContain('test-api-key-12345');
+    saveSettings({
+      ...initial,
+      geminiApiKey: "test-key-123",
+      bilingualMode: true,
+      arabicFont: "Sakkal Majalla",
+    });
 
-    const loaded = storageService.getSettings();
-    expect(loaded.geminiApiKey).toBe('test-api-key-12345');
-    expect(loaded.autoRtl).toBe(false);
+    const loaded = loadSettings();
+    expect(loaded.geminiApiKey).toBe("test-key-123");
+    expect(loaded.bilingualMode).toBe(true);
+    expect(loaded.arabicFont).toBe("Sakkal Majalla");
   });
 
-  it('retrieves default saved prompts', () => {
-    const prompts = storageService.getSavedPrompts();
-    expect(prompts.length).toBeGreaterThanOrEqual(4);
-    expect(prompts[0].title).toBe('Deck from Outline');
+  it("trims oldest chat history messages when count or byte size exceeds limit instead of wiping all", () => {
+    const messages: ChatMessage[] = Array.from({ length: 15 }, (_, idx) => ({
+      id: `msg-${idx + 1}`,
+      role: idx % 2 === 0 ? "user" : "assistant",
+      content: `Message #${idx + 1} — ${"X".repeat(200)}`,
+      timestamp: Date.now() + idx,
+    }));
+
+    const { messages: trimmedByCount, trimmedCount } = trimChatHistory(
+      messages,
+      10,
+      100_000
+    );
+    expect(trimmedByCount.length).toBe(10);
+    expect(trimmedCount).toBe(5);
+    expect(trimmedByCount[0].id).toBe("msg-6");
+    expect(trimmedByCount[9].id).toBe("msg-15");
+
+    // Byte size trimming keeps newest messages
+    const { messages: trimmedByBytes } = trimChatHistory(messages, 50, 1200);
+    expect(trimmedByBytes.length).toBeGreaterThan(0);
+    expect(trimmedByBytes.length).toBeLessThan(15);
+    expect(trimmedByBytes[trimmedByBytes.length - 1].id).toBe("msg-15");
+
+    saveChatHistory(messages, "deck-1.pptx");
+    const restored = loadChatHistory("deck-1.pptx");
+    expect(restored.length).toBe(15);
   });
 
-  it('saves and clears chat history', () => {
-    const msgs: ChatMessage[] = [
-      { id: '1', role: 'user', content: 'Hello', timestamp: 1000 },
-      { id: '2', role: 'assistant', content: 'Hi there', timestamp: 1001 }
-    ];
+  it("persists custom saved prompts alongside built-in prompts", () => {
+    const initial = loadSavedPrompts();
+    expect(initial.some((p) => p.isBuiltIn)).toBe(true);
 
-    storageService.saveChatHistory(msgs, 'file1');
-    const loaded = storageService.getChatHistory('file1');
-    expect(loaded).toHaveLength(2);
-    expect(loaded[0].content).toBe('Hello');
+    saveCustomPrompts([
+      ...initial,
+      {
+        id: "custom-1",
+        title: "Custom Well Prompt",
+        prompt: "Summarize WELL-09 test",
+        category: "custom",
+      },
+    ]);
 
-    storageService.clearChatHistory('file1');
-    expect(storageService.getChatHistory('file1')).toHaveLength(0);
+    const after = loadSavedPrompts();
+    expect(after.some((p) => p.id === "custom-1")).toBe(true);
   });
 });

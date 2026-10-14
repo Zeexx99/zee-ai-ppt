@@ -1,431 +1,278 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from "react";
+import { Badge, Button, Spinner, Tooltip } from "@fluentui/react-components";
 import {
-  Button,
-  Badge,
-  Spinner,
-  Card,
-  Tooltip
-} from '@fluentui/react-components';
-import {
-  ArrowUndo24Regular,
-  Play24Regular,
-  Copy24Regular,
-  Warning24Regular,
-  Checkmark24Regular,
-  Dismiss24Regular
-} from '@fluentui/react-icons';
-import { ChatMessage, AgentStep, ToolApproval, UndoRecord } from '../types/chat';
-import { ApprovalCard } from './ApprovalCard';
-import { arabicService } from '../services/arabicService';
+  Copy16Regular,
+  SlideAdd16Regular,
+  TextBoxSettingsRegular,
+} from "@fluentui/react-icons";
+import { AgentToolStep, ChatMessage } from "../types/chat";
+import { ZeeSettings } from "../types/settings";
+import { detectTextDirection, resolveArabicFontFamily } from "../services/arabicService";
+import { ApprovalCard } from "./ApprovalCard";
 
 interface ChatFeedProps {
   messages: ChatMessage[];
-  onApproveTool: (messageId: string, approval: ToolApproval) => void;
-  onRejectTool: (messageId: string, approval: ToolApproval) => void;
+  settings: ZeeSettings;
+  isDark: boolean;
+  onCopyMessage: (text: string) => void;
+  onInsertIntoSlide: (text: string) => void;
+  onCreateSlideFromMessage: (text: string) => void;
+  onApproveStep: (stepId: string) => void;
+  onRejectStep: (stepId: string) => void;
+  onUndoStep: (step: AgentToolStep) => void;
+  onRetryStep: (step: AgentToolStep) => void;
   onContinueAgent: () => void;
-  isStepLimitReached: boolean;
-  onUndoLastAction: () => void;
-  canUndo: boolean;
-  lastUndoDescription?: string;
-  isStreaming: boolean;
 }
 
 export const ChatFeed: React.FC<ChatFeedProps> = ({
   messages,
-  onApproveTool,
-  onRejectTool,
+  settings,
+  isDark,
+  onCopyMessage,
+  onInsertIntoSlide,
+  onCreateSlideFromMessage,
+  onApproveStep,
+  onRejectStep,
+  onUndoStep,
+  onRetryStep,
   onContinueAgent,
-  isStepLimitReached,
-  onUndoLastAction,
-  canUndo,
-  lastUndoDescription,
-  isStreaming
 }) => {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreaming, isStepLimitReached]);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  const copyToClipboard = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // ignore
-    }
-  };
-
-  /**
-   * Renders simple markdown (code blocks, bold, bullets, headers) with RTL support
-   */
-  const renderFormattedContent = (content: string) => {
-    if (!content) return null;
-
-    // Check if primarily Arabic
-    const isArabic = arabicService.hasArabic(content);
-
-    // Split code blocks
-    const codeBlockRegex = /```([a-z]*)\n([\s\S]*?)```/g;
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      if (match.index > lastIndex) {
-        const textSegment = content.substring(lastIndex, match.index);
-        parts.push(renderTextSegment(textSegment, isArabic, `text-${lastIndex}`));
-      }
-
-      const lang = match[1] || 'code';
-      const code = match[2];
-      const codeIndex = match.index;
-
-      parts.push(
-        <div
-          key={`code-${codeIndex}`}
-          style={{
-            position: 'relative',
-            background: 'var(--colorNeutralBackground4)',
-            borderRadius: '6px',
-            padding: '10px',
-            margin: '8px 0',
-            fontFamily: 'Consolas, monospace',
-            fontSize: '12px',
-            overflowX: 'auto'
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', opacity: 0.7 }}>
-            <span style={{ fontSize: '10px', textTransform: 'uppercase' }}>{lang}</span>
-            <Button
-              size="small"
-              appearance="subtle"
-              icon={<Copy24Regular style={{ fontSize: '12px' }} />}
-              onClick={() => copyToClipboard(code)}
-              aria-label="Copy code block"
-              style={{ minWidth: 'auto', height: '20px', padding: '0 4px' }}
-            />
-          </div>
-          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{code}</pre>
-        </div>
-      );
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < content.length) {
-      parts.push(renderTextSegment(content.substring(lastIndex), isArabic, `text-${lastIndex}`));
-    }
-
-    return parts;
-  };
-
-  const renderTextSegment = (text: string, isRtl: boolean, key: string) => {
-    const lines = text.split('\n');
+  if (messages.length === 0) {
     return (
       <div
-        key={key}
+        className="zee-scroll-area"
         style={{
-          direction: isRtl ? 'rtl' : 'ltr',
-          textAlign: isRtl ? 'right' : 'left',
-          lineHeight: '1.5'
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "center",
+          textAlign: "center",
+          padding: 20,
+          opacity: 0.85,
         }}
       >
-        {lines.map((line, idx) => {
-          if (!line.trim()) {
-            return <div key={idx} style={{ height: '8px' }} />;
-          }
-
-          // Headers
-          if (line.startsWith('### ')) {
-            return (
-              <h4 key={idx} style={{ margin: '6px 0 2px 0', fontWeight: 600, fontSize: '13px' }}>
-                {line.replace('### ', '')}
-              </h4>
-            );
-          }
-          if (line.startsWith('## ')) {
-            return (
-              <h3 key={idx} style={{ margin: '8px 0 4px 0', fontWeight: 700, fontSize: '14px' }}>
-                {line.replace('## ', '')}
-              </h3>
-            );
-          }
-
-          // Bullets
-          if (line.trim().startsWith('•') || line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
-            const cleanBullet = line.trim().replace(/^[-*•]\s*/, '');
-            return (
-              <div key={idx} style={{ display: 'flex', gap: '6px', margin: '2px 0' }}>
-                <span>•</span>
-                <span>{renderInlineStyles(cleanBullet)}</span>
-              </div>
-            );
-          }
-
-          return <div key={idx}>{renderInlineStyles(line)}</div>;
-        })}
+        <img
+          src="assets/icon-64.png"
+          alt="Zee AI"
+          width={44}
+          height={44}
+          style={{ borderRadius: 10, marginBottom: 10 }}
+        />
+        <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
+          Zee AI for PowerPoint
+        </div>
+        <div style={{ fontSize: 12, maxWidth: 280, lineHeight: 1.5, opacity: 0.85 }}>
+          Chat with Gemini, use <b>Agent Mode</b> to inspect &amp; build slides with approval cards,
+          or launch <b>Report → Deck</b>, <b>Excel → Slide</b>, <b>Consistency</b>, and{" "}
+          <b>Text-Fit</b> tools above.
+        </div>
       </div>
     );
-  };
-
-  const renderInlineStyles = (line: string) => {
-    // Bold **text**
-    const parts = line.split(/(\*\*.*?\*\*)/g);
-    return parts.map((part, pIdx) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={pIdx}>{part.slice(2, -2)}</strong>;
-      }
-      return part;
-    });
-  };
+  }
 
   return (
-    <div
-      style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '12px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '12px'
-      }}
-    >
-      {/* Empty State Banner */}
-      {messages.length === 0 && (
-        <div
-          style={{
-            margin: 'auto',
-            textAlign: 'center',
-            padding: '24px 16px',
-            color: 'var(--colorNeutralForeground3)'
-          }}
-        >
-          <div
-            style={{
-              width: '48px',
-              height: '48px',
-              margin: '0 auto 12px auto',
-              borderRadius: '12px',
-              background: 'linear-gradient(135deg, #D24726 0%, #E8633A 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#fff',
-              fontSize: '24px',
-              fontWeight: 800
-            }}
-          >
-            Z
-          </div>
-          <h3 style={{ margin: '0 0 4px 0', fontSize: '15px', color: 'var(--colorNeutralForeground1)' }}>
-            Zee AI for PowerPoint
-          </h3>
-          <p style={{ margin: 0, fontSize: '12px', maxWidth: '240px' }}>
-            Generate presentations, rewrite selected text, create speaker notes, or turn Excel results into slides.
-          </p>
-        </div>
-      )}
-
-      {/* Messages */}
-      {messages.map(msg => {
-        const isUser = msg.role === 'user';
+    <div className="zee-scroll-area">
+      {messages.map((msg) => {
+        const dir = msg.direction || detectTextDirection(msg.content, settings.directionMode);
+        const fontFamily = resolveArabicFontFamily(
+          msg.content,
+          settings.arabicFont,
+          undefined
+        );
+        const isUser = msg.role === "user";
+        const isSystem = msg.role === "system";
 
         return (
           <div
             key={msg.id}
+            className="zee-message-bubble"
+            dir={dir}
             style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: isUser ? 'flex-end' : 'flex-start',
-              width: '100%'
+              fontFamily,
+              background: isUser
+                ? isDark
+                  ? "#3b231d"
+                  : "#fdf3f0"
+                : isSystem
+                  ? isDark
+                    ? "#292929"
+                    : "#f3f2f1"
+                  : isDark
+                    ? "#252525"
+                    : "#f8f8f8",
+              border: isUser
+                ? "1px solid rgba(183, 54, 24, 0.35)"
+                : "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+              marginLeft: isUser ? 18 : 0,
+              marginRight: isUser ? 0 : 8,
             }}
           >
-            {/* Message Bubble */}
             <div
               style={{
-                maxWidth: '88%',
-                padding: '10px 12px',
-                borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-                background: isUser ? '#D24726' : 'var(--colorNeutralBackground2)',
-                color: isUser ? '#ffffff' : 'var(--colorNeutralForeground1)',
-                border: isUser ? 'none' : '1px solid rgba(128,128,128,0.15)',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-                fontSize: '13px'
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                fontSize: 11,
+                fontWeight: 600,
+                marginBottom: 4,
+                opacity: 0.75,
               }}
+              dir="ltr"
             >
-              {/* Attachments */}
-              {msg.attachments && msg.attachments.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-                  {msg.attachments.map(att => (
-                    <div
-                      key={att.id}
-                      style={{
-                        fontSize: '11px',
-                        background: isUser ? 'rgba(255,255,255,0.2)' : 'var(--colorNeutralBackground3)',
-                        padding: '4px 6px',
-                        borderRadius: '4px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                      }}
-                    >
-                      <span>{att.type === 'pdf' ? '📄' : '🖼️'}</span>
-                      <span style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {att.name}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <span>
+                {isUser ? "You" : isSystem ? "System" : "Zee AI"}
+                {dir === "rtl" ? " • RTL" : ""}
+              </span>
+              <span>
+                {new Date(msg.timestamp).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            </div>
 
-              {/* Text content */}
-              {renderFormattedContent(msg.content)}
+            {msg.attachments && msg.attachments.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 4,
+                  marginBottom: 6,
+                }}
+                dir="ltr"
+              >
+                {msg.attachments.map((att) => (
+                  <Badge key={att.id} size="small" appearance="outline" color="informative">
+                    📎 {att.name}
+                  </Badge>
+                ))}
+              </div>
+            )}
 
-              {/* Error display */}
-              {msg.error && (
-                <div
-                  style={{
-                    color: '#d13438',
-                    fontSize: '12px',
-                    marginTop: '6px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px'
-                  }}
-                >
-                  <Warning24Regular style={{ fontSize: '14px' }} />
-                  <span>{msg.error}</span>
-                </div>
+            <div>
+              {msg.content}
+              {msg.isStreaming && (
+                <span style={{ display: "inline-flex", alignItems: "center", marginLeft: 6 }}>
+                  <Spinner size="extra-tiny" />
+                </span>
               )}
             </div>
 
-            {/* Agent Steps Container */}
-            {msg.agentSteps && msg.agentSteps.length > 0 && (
+            {msg.codeExecutionOutput && (
               <div
+                dir="ltr"
                 style={{
-                  width: '95%',
-                  marginTop: '8px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px'
+                  marginTop: 8,
+                  padding: 8,
+                  borderRadius: 6,
+                  background: isDark ? "#141414" : "#eee",
+                  fontFamily: "Consolas, monospace",
+                  fontSize: 11,
+                  overflowX: "auto",
                 }}
               >
-                {msg.agentSteps.map(step => (
-                  <div
-                    key={step.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      fontSize: '11px',
-                      padding: '6px 8px',
-                      borderRadius: '4px',
-                      background: 'var(--colorNeutralBackground3)',
-                      border: '1px solid rgba(128,128,128,0.1)'
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
-                      {step.status === 'running' && <Spinner size="extra-tiny" />}
-                      {step.status === 'success' && <Checkmark24Regular style={{ color: '#107C41', fontSize: '13px' }} />}
-                      {step.status === 'failed' && <Dismiss24Regular style={{ color: '#d13438', fontSize: '13px' }} />}
-                      <span style={{ fontWeight: 600 }}>Step {step.stepNumber}:</span>
-                      <span style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                        {step.description}
-                      </span>
-                    </div>
-                    <Badge
-                      size="small"
-                      appearance="tint"
-                      color={
-                        step.status === 'success' ? 'success' : step.status === 'failed' ? 'danger' : 'informative'
-                      }
+                {msg.codeExecutionOutput}
+              </div>
+            )}
+
+            {msg.citations && msg.citations.length > 0 && (
+              <div
+                dir="ltr"
+                style={{
+                  marginTop: 8,
+                  paddingTop: 6,
+                  borderTop: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                  fontSize: 11,
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 3 }}>🌐 Web Sources:</div>
+                {msg.citations.map((c, idx) => (
+                  <div key={idx} style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                    •{" "}
+                    <a
+                      href={c.uri}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "#0f6cbd" }}
                     >
-                      {step.status}
-                    </Badge>
+                      {c.title}
+                    </a>
                   </div>
                 ))}
               </div>
             )}
 
-            {/* Approval Card */}
-            {msg.toolApproval && (
-              <div style={{ width: '95%', marginTop: '6px' }}>
+            {msg.agentSteps && msg.agentSteps.length > 0 && (
+              <div dir="ltr">
                 <ApprovalCard
-                  approval={msg.toolApproval}
-                  onApprove={() => onApproveTool(msg.id, msg.toolApproval!)}
-                  onReject={() => onRejectTool(msg.id, msg.toolApproval!)}
+                  steps={msg.agentSteps}
+                  awaitingContinue={msg.awaitingContinue}
+                  onApproveStep={onApproveStep}
+                  onRejectStep={onRejectStep}
+                  onUndoStep={onUndoStep}
+                  onRetryStep={onRetryStep}
+                  onContinueAgent={onContinueAgent}
                 />
+              </div>
+            )}
+
+            {msg.role === "assistant" && !msg.isStreaming && msg.content.trim() && (
+              <div
+                dir="ltr"
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 4,
+                  marginTop: 8,
+                  paddingTop: 6,
+                  borderTop: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+                }}
+              >
+                <Tooltip content="Copy response text" relationship="label">
+                  <Button
+                    size="small"
+                    appearance="subtle"
+                    icon={<Copy16Regular />}
+                    onClick={() => onCopyMessage(msg.content)}
+                    style={{ fontSize: 11, padding: "2px 6px" }}
+                  >
+                    Copy
+                  </Button>
+                </Tooltip>
+                <Tooltip content="Insert into active slide" relationship="label">
+                  <Button
+                    size="small"
+                    appearance="subtle"
+                    icon={<TextBoxSettingsRegular />}
+                    onClick={() => onInsertIntoSlide(msg.content)}
+                    style={{ fontSize: 11, padding: "2px 6px" }}
+                  >
+                    To Slide
+                  </Button>
+                </Tooltip>
+                <Tooltip content="Create a new slide from this response" relationship="label">
+                  <Button
+                    size="small"
+                    appearance="subtle"
+                    icon={<SlideAdd16Regular />}
+                    onClick={() => onCreateSlideFromMessage(msg.content)}
+                    style={{ fontSize: 11, padding: "2px 6px" }}
+                  >
+                    New Slide
+                  </Button>
+                </Tooltip>
               </div>
             )}
           </div>
         );
       })}
-
-      {/* Streaming spinner */}
-      {isStreaming && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0', fontSize: '12px', color: 'var(--colorNeutralForeground3)' }}>
-          <Spinner size="tiny" />
-          <span>Zee AI is drafting response...</span>
-        </div>
-      )}
-
-      {/* Step Limit Reached Warning & Continue Button */}
-      {isStepLimitReached && (
-        <Card
-          style={{
-            padding: '12px',
-            border: '1px solid #D24726',
-            background: 'var(--colorNeutralBackground2)',
-            borderRadius: '6px',
-            margin: '8px 0'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <Warning24Regular style={{ color: '#D24726', fontSize: '18px' }} />
-            <span style={{ fontWeight: 600, fontSize: '13px' }}>Step Limit Reached</span>
-          </div>
-          <p style={{ margin: '0 0 10px 0', fontSize: '12px', color: 'var(--colorNeutralForeground2)' }}>
-            Zee AI completed the current action batch. Would you like to continue to the next steps?
-          </p>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-            <Button
-              size="small"
-              appearance="primary"
-              icon={<Play24Regular />}
-              onClick={onContinueAgent}
-              style={{ background: '#D24726', borderColor: '#D24726' }}
-            >
-              Continue Next Steps
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      {/* Undo Button floating banner */}
-      {canUndo && (
-        <div
-          style={{
-            alignSelf: 'center',
-            margin: '4px 0',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}
-        >
-          <Tooltip content={lastUndoDescription ? `Revert: ${lastUndoDescription}` : 'Undo last slide action'} relationship="label">
-            <Button
-              size="small"
-              appearance="secondary"
-              icon={<ArrowUndo24Regular style={{ fontSize: '14px' }} />}
-              onClick={onUndoLastAction}
-            >
-              Undo Last Action
-            </Button>
-          </Tooltip>
-        </div>
-      )}
-
-      <div ref={bottomRef} style={{ height: '2px' }} />
+      <div ref={bottomRef} />
     </div>
   );
 };

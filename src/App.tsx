@@ -1,617 +1,723 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from "react";
 import {
+  Button,
   FluentProvider,
-  webLightTheme,
   webDarkTheme,
-  Theme
-} from '@fluentui/react-components';
-import { Header } from './components/Header';
-import { ChatFeed } from './components/ChatFeed';
-import { ChatInput } from './components/ChatInput';
-import { SettingsDrawer } from './components/SettingsDrawer';
-import { QuickActions } from './components/QuickActions';
-import { PowerPointDeckModal } from './components/PowerPointDeckModal';
-import { ResultsSlideModal } from './components/ResultsSlideModal';
+  webLightTheme,
+} from "@fluentui/react-components";
+import { Header } from "./components/Header";
+import { QuickActions } from "./components/QuickActions";
+import { ChatFeed } from "./components/ChatFeed";
+import { ChatInput } from "./components/ChatInput";
+import { SettingsDrawer } from "./components/SettingsDrawer";
+import { DeckToolMode, PowerPointDeckModal } from "./components/PowerPointDeckModal";
+import { ResultsSlideModal } from "./components/ResultsSlideModal";
+import {
+  AgentToolStep,
+  ChatAttachment,
+  ChatMessage,
+  QuickActionType,
+  SavedPrompt,
+  SlideUndoSnapshot,
+} from "./types/chat";
+import { PowerPointApiRequirements } from "./types/ppt";
+import { ZeeSettings } from "./types/settings";
+import {
+  clearChatHistory,
+  loadChatHistory,
+  loadSavedPrompts,
+  loadSettings,
+  saveChatHistory,
+  saveCustomPrompts,
+  saveSettings,
+} from "./services/storageService";
+import {
+  detectPowerPointRequirements,
+  formatCompactPresentationSummary,
+  getActiveSlideIndex,
+  getDocumentIdentifier,
+  getPresentationSummary,
+  getSelectedText,
+  listAvailableLayouts,
+  readSlide,
+  restoreUndoSnapshot,
+  startOfficeReadinessMonitor,
+} from "./services/pptService";
+import {
+  appendConvertedUnitsToText,
+  buildDirectionAndLanguageInstruction,
+  detectTextDirection,
+} from "./services/arabicService";
+import { isAuthConfigured } from "./services/authService";
+import {
+  evaluateCostGuard,
+  streamGeminiChat,
+} from "./services/geminiService";
+import {
+  AgentLoopSession,
+  executeAgentToolStep,
+  runAgentLoop,
+  undoCompletedAgentStep,
+} from "./services/agentService";
+import {
+  copyTextToClipboard,
+  downloadChatTranscript,
+  exportTextToSlideElement,
+} from "./services/exportService";
+import { generateSpeakerNotesForSlide } from "./services/pptFeaturesService";
 
-import { AppSettings, DEFAULT_SETTINGS, DarkModeSetting } from './types/settings';
-import { ChatMessage, Attachment, AgentStep, ToolApproval, UndoRecord, SavedPrompt } from './types/chat';
-import { RequirementSetStatus } from './types/ppt';
-
-import { storageService } from './services/storageService';
-import { pptService } from './services/pptService';
-import { geminiService, ToolCall } from './services/geminiService';
-import { agentService, AGENT_TOOLS } from './services/agentService';
-import { pptFeaturesService } from './services/pptFeaturesService';
-import { exportService } from './services/exportService';
-
-interface AppProps {
-  isOfficeReady: boolean;
-}
-
-export const App: React.FC<AppProps> = ({ isOfficeReady }) => {
-  // Eagerly loaded state
-  const [settings, setSettings] = useState<AppSettings>(() => storageService.getSettings());
-  const [messages, setMessages] = useState<ChatMessage[]>(() => storageService.getChatHistory());
-  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>(() => storageService.getSavedPrompts());
-  const [requirementStatus, setRequirementStatus] = useState<RequirementSetStatus>(() =>
-    pptService.getRequirementStatus()
+export const App: React.FC = () => {
+  const [settings, setSettings] = useState<ZeeSettings>(() => loadSettings());
+  const [requirements, setRequirements] = useState<PowerPointApiRequirements>(() =>
+    detectPowerPointRequirements()
   );
+  const [docId, setDocId] = useState<string>(() => getDocumentIdentifier());
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    loadChatHistory(getDocumentIdentifier())
+  );
+  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>(() =>
+    loadSavedPrompts()
+  );
+  const [availableLayouts, setAvailableLayouts] = useState<string[]>([
+    "Title Slide",
+    "Title and Content",
+    "Section Header",
+    "Two Content",
+  ]);
 
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
-  const [isResultsModalOpen, setIsResultsModalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deckModalMode, setDeckModalMode] = useState<DeckToolMode>(null);
+  const [excelModalOpen, setExcelModalOpen] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
+  const [statusBanner, setStatusBanner] = useState<string>("");
+  const [undoStack, setUndoStack] = useState<SlideUndoSnapshot[]>([]);
 
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [isStepLimitReached, setIsStepLimitReached] = useState(false);
-  const [undoStack, setUndoStack] = useState<UndoRecord[]>([]);
+  // Cost guard confirmation state
+  const [pendingCostGuard, setPendingCostGuard] = useState<{
+    text: string;
+    attachments: ChatAttachment[];
+    estimatedTokens: number;
+    limit: number;
+  } | null>(null);
 
+  // Agent session & approval resolvers
+  const activeAgentSessionRef = useRef<{
+    messageId: string;
+    session: AgentLoopSession;
+    userPrompt: string;
+    attachments: ChatAttachment[];
+  } | null>(null);
+
+  const approvalResolversRef = useRef<Map<string, (approved: boolean) => void>>(
+    new Map()
+  );
   const abortControllerRef = useRef<AbortController | null>(null);
-  const currentStepCountRef = useRef<number>(0);
 
-  // Sync settings and chat history to storage
+  // Repeated Office readiness checks (fixes stuck "Preview mode" banner bug)
   useEffect(() => {
-    storageService.saveSettings(settings);
-  }, [settings]);
+    const stopMonitor = startOfficeReadinessMonitor(async (reqs) => {
+      setRequirements(reqs);
+      const currentDoc = getDocumentIdentifier();
+      setDocId(currentDoc);
+      const layouts = await listAvailableLayouts();
+      if (layouts.length > 0) setAvailableLayouts(layouts);
+    });
+    return stopMonitor;
+  }, []);
 
-  useEffect(() => {
-    storageService.saveChatHistory(messages);
-  }, [messages]);
-
-  useEffect(() => {
-    setRequirementStatus(pptService.getRequirementStatus());
-  }, [isOfficeReady]);
-
-  // Dark mode resolution
-  const [resolvedTheme, setResolvedTheme] = useState<Theme>(webLightTheme);
-
-  useEffect(() => {
-    if (settings.darkMode === 'dark') {
-      setResolvedTheme(webDarkTheme);
-    } else if (settings.darkMode === 'light') {
-      setResolvedTheme(webLightTheme);
-    } else {
-      // Auto mode
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      setResolvedTheme(mq.matches ? webDarkTheme : webLightTheme);
-      const listener = (e: MediaQueryListEvent) => {
-        setResolvedTheme(e.matches ? webDarkTheme : webLightTheme);
+  // Persist settings
+  const handleUpdateSettings = (partial: Partial<ZeeSettings>) => {
+    setSettings((prev) => {
+      const updated: ZeeSettings = {
+        ...prev,
+        ...partial,
+        companyTemplate: partial.companyTemplate
+          ? { ...prev.companyTemplate, ...partial.companyTemplate }
+          : prev.companyTemplate,
       };
-      mq.addEventListener('change', listener);
-      return () => mq.removeEventListener('change', listener);
-    }
-  }, [settings.darkMode]);
-
-  const toggleDarkMode = () => {
-    const next: DarkModeSetting = settings.darkMode === 'dark' ? 'light' : 'dark';
-    setSettings(prev => ({ ...prev, darkMode: next }));
+      saveSettings(updated);
+      return updated;
+    });
   };
 
-  const handleStopStreaming = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setIsStreaming(false);
+  // Persist chat history with automatic oldest-message trimming
+  useEffect(() => {
+    saveChatHistory(messages, docId);
+  }, [messages, docId]);
+
+  const systemPrefersDark =
+    typeof window !== "undefined" &&
+    window.matchMedia &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+  const isDark =
+    settings.appearance === "dark" ||
+    (settings.appearance === "auto" && systemPrefersDark);
+
+  const showTransientBanner = (msg: string) => {
+    setStatusBanner(msg);
+    window.setTimeout(() => {
+      setStatusBanner((curr) => (curr === msg ? "" : curr));
+    }, 4000);
   };
 
-  /**
-   * Main Agent Execution Loop with approval cards, step limits, and streaming
-   */
-  const runAgentTurn = async (conversation: ChatMessage[], newPrompt?: string) => {
-    setIsStreaming(true);
-    setIsStepLimitReached(false);
-    abortControllerRef.current = new AbortController();
+  const pushUndoSnapshots = (snaps: SlideUndoSnapshot[]) => {
+    if (!snaps || snaps.length === 0) return;
+    setUndoStack((prev) => [...prev, ...snaps]);
+  };
 
-    const assistantMsgId = `msg-assistant-${Date.now()}`;
-    const initialAssistantMsg: ChatMessage = {
-      id: assistantMsgId,
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-      agentSteps: []
-    };
-
-    setMessages(prev => [...prev, initialAssistantMsg]);
-
+  const handleUndoLast = async () => {
+    if (undoStack.length === 0) return;
+    const last = undoStack[undoStack.length - 1];
     try {
-      const overview = await pptService.getPresentationOverview();
-      const systemInstruction = agentService.buildSystemPrompt(overview, settings);
-
-      const streamMessages = conversation.map(m => ({
-        role: m.role,
-        content: m.content,
-        attachments: m.attachments
-      }));
-
-      if (newPrompt) {
-        streamMessages.push({ role: 'user', content: newPrompt, attachments: [] });
-      }
-
-      let accumulatedText = '';
-      const steps: AgentStep[] = [];
-      let pendingApproval: ToolApproval | null = null;
-
-      for await (const chunk of geminiService.streamChat({
-        messages: streamMessages,
-        systemInstruction,
-        tools: AGENT_TOOLS,
-        settings,
-        signal: abortControllerRef.current.signal
-      })) {
-        if (chunk.textDelta) {
-          accumulatedText += chunk.textDelta;
-          setMessages(prev =>
-            prev.map(m => (m.id === assistantMsgId ? { ...m, content: accumulatedText } : m))
-          );
-        }
-
-        if (chunk.toolCalls && chunk.toolCalls.length > 0) {
-          for (const tc of chunk.toolCalls) {
-            currentStepCountRef.current++;
-            const stepNum = currentStepCountRef.current;
-            const isRead = agentService.isReadOnlyTool(tc.name);
-            const description = agentService.formatApprovalDescription(tc.name, tc.args);
-
-            const stepId = `step-${Date.now()}-${stepNum}`;
-            const newStep: AgentStep = {
-              id: stepId,
-              stepNumber: stepNum,
-              toolName: tc.name,
-              description,
-              status: isRead ? 'running' : 'approving',
-              params: tc.args,
-              timestamp: Date.now()
-            };
-
-            steps.push(newStep);
-
-            if (isRead) {
-              // Execute read-only tool immediately
-              setMessages(prev =>
-                prev.map(m => (m.id === assistantMsgId ? { ...m, agentSteps: [...steps] } : m))
-              );
-
-              try {
-                const res = await agentService.executeTool(tc.name, tc.args, settings);
-                newStep.status = 'success';
-                newStep.result = res.result;
-              } catch (err) {
-                newStep.status = 'failed';
-                newStep.error = err instanceof Error ? err.message : String(err);
-              }
-
-              setMessages(prev =>
-                prev.map(m => (m.id === assistantMsgId ? { ...m, agentSteps: [...steps] } : m))
-              );
-            } else {
-              // Write tool requires Approval Card!
-              pendingApproval = {
-                stepId,
-                toolName: tc.name,
-                description,
-                params: tc.args,
-                isPending: true
-              };
-
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === assistantMsgId
-                    ? { ...m, agentSteps: [...steps], toolApproval: pendingApproval! }
-                    : m
-                )
-              );
-
-              // Pause for user approval
-              setIsStreaming(false);
-              return;
-            }
-
-            // Step limit check
-            if (currentStepCountRef.current >= settings.maxAgentSteps) {
-              setIsStepLimitReached(true);
-              setIsStreaming(false);
-              return;
-            }
-          }
-        }
-      }
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        // user aborted
-      } else {
-        const errorMsg = err instanceof Error ? err.message : 'An error occurred during AI processing.';
-        setMessages(prev =>
-          prev.map(m => (m.id === assistantMsgId ? { ...m, error: errorMsg } : m))
-        );
-      }
-    } finally {
-      setIsStreaming(false);
+      const msg = await restoreUndoSnapshot(last);
+      setUndoStack((prev) => prev.slice(0, -1));
+      showTransientBanner(`↶ ${msg}`);
+    } catch (err) {
+      showTransientBanner(
+        `Undo error: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   };
 
-  /**
-   * Sends user message
-   */
-  const handleSendMessage = async (text: string, attachments: Attachment[]) => {
-    // Cost guard token estimate
-    if (settings.costGuardEnabled) {
-      const tokens = await geminiService.estimateTokens(text, attachments, settings);
-      if (tokens > settings.costGuardThreshold) {
-        const proceed = window.confirm(
-          `Cost Guard Warning:\nThis prompt is estimated at ~${tokens.toLocaleString()} tokens (threshold: ${settings.costGuardThreshold.toLocaleString()}).\nProceed anyway?`
-        );
-        if (!proceed) return;
+  const executeSendPrompt = async (
+    text: string,
+    attachments: ChatAttachment[] = [],
+    bypassCostGuard: boolean = false
+  ) => {
+    if (!isAuthConfigured(settings)) {
+      setSettingsOpen(true);
+      showTransientBanner("Please enter your Gemini API Key or Proxy settings first.");
+      return;
+    }
+
+    if (!bypassCostGuard) {
+      const guard = evaluateCostGuard(settings, text, messages, attachments);
+      if (guard.exceedsLimit) {
+        setPendingCostGuard({
+          text,
+          attachments,
+          estimatedTokens: guard.estimatedTokens,
+          limit: guard.limit,
+        });
+        return;
       }
     }
 
-    currentStepCountRef.current = 0;
+    setPendingCostGuard(null);
     const userMsg: ChatMessage = {
-      id: `msg-user-${Date.now()}`,
-      role: 'user',
+      id: `user-${Date.now()}`,
+      role: "user",
       content: text,
       timestamp: Date.now(),
-      attachments
+      attachments: attachments.length > 0 ? attachments : undefined,
+      direction: detectTextDirection(text, settings.directionMode),
     };
 
-    const nextConversation = [...messages, userMsg];
-    setMessages(nextConversation);
-    await runAgentTurn(nextConversation);
-  };
+    const assistantMsgId = `assistant-${Date.now() + 1}`;
+    const placeholderAssistant: ChatMessage = {
+      id: assistantMsgId,
+      role: "assistant",
+      content: settings.agentMode ? "Inspecting presentation and planning slide actions..." : "",
+      timestamp: Date.now(),
+      isStreaming: true,
+      agentSteps: settings.agentMode ? [] : undefined,
+    };
 
-  /**
-   * Handles tool approval by user
-   */
-  const handleApproveTool = async (messageId: string, approval: ToolApproval) => {
-    // Mark approval
-    setMessages(prev =>
-      prev.map(m =>
-        m.id === messageId
-          ? {
-              ...m,
-              toolApproval: { ...approval, isPending: false, approved: true },
-              agentSteps: m.agentSteps?.map(s =>
-                s.id === approval.stepId ? { ...s, status: 'running' } : s
-              )
-            }
-          : m
-      )
-    );
+    const historySnapshot = [...messages];
+    setMessages((prev) => [...prev, userMsg, placeholderAssistant]);
+    setIsBusy(true);
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
-      const res = await agentService.executeTool(approval.toolName, approval.params, settings);
+      if (settings.agentMode) {
+        const session = await runAgentLoop({
+          settings,
+          history: historySnapshot,
+          userPrompt: text,
+          attachments,
+          requirements,
+          signal: abortController.signal,
+          onUpdate: (updatedSession) => {
+            activeAgentSessionRef.current = {
+              messageId: assistantMsgId,
+              session: updatedSession,
+              userPrompt: text,
+              attachments,
+            };
+            const completedSnaps = updatedSession.steps
+              .filter((s) => s.status === "completed" && s.undoSnapshot)
+              .map((s) => s.undoSnapshot!);
+            if (completedSnaps.length > 0) {
+              setUndoStack((prev) => {
+                const existingIds = new Set(prev.map((p) => p.stepId));
+                const fresh = completedSnaps.filter((s) => !existingIds.has(s.stepId));
+                return fresh.length > 0 ? [...prev, ...fresh] : prev;
+              });
+            }
 
-      if (res.undoRecord) {
-        setUndoStack(prev => [...prev, res.undoRecord!]);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? {
+                      ...m,
+                      content:
+                        updatedSession.finalText ||
+                        `Executed ${updatedSession.steps.length} slide step(s).`,
+                      agentSteps: [...updatedSession.steps],
+                      awaitingContinue: updatedSession.awaitingContinue,
+                    }
+                  : m
+              )
+            );
+          },
+          requestApproval: (step) =>
+            new Promise<boolean>((resolve) => {
+              approvalResolversRef.current.set(step.id, resolve);
+            }),
+        });
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  isStreaming: false,
+                  content:
+                    session.finalText ||
+                    `Completed ${session.steps.filter((s) => s.status === "completed").length} slide action(s).`,
+                  agentSteps: session.steps,
+                  awaitingContinue: session.awaitingContinue,
+                  direction: detectTextDirection(
+                    session.finalText || "",
+                    settings.directionMode
+                  ),
+                }
+              : m
+          )
+        );
+      } else {
+        const summary = await getPresentationSummary();
+        const compactContext = formatCompactPresentationSummary(summary);
+
+        const finalRes = await streamGeminiChat(settings, historySnapshot, text, {
+          attachments,
+          presentationContextSummary: compactContext,
+          signal: abortController.signal,
+          onChunk: (accumulatedText, citations, codeOutput) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? {
+                      ...m,
+                      content: accumulatedText,
+                      citations,
+                      codeExecutionOutput: codeOutput,
+                      direction: detectTextDirection(
+                        accumulatedText,
+                        settings.directionMode
+                      ),
+                    }
+                  : m
+              )
+            );
+          },
+        });
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  content: finalRes.text || "(No text returned)",
+                  citations: finalRes.citations,
+                  codeExecutionOutput: finalRes.codeExecutionOutput,
+                  isStreaming: false,
+                  direction: detectTextDirection(finalRes.text, settings.directionMode),
+                }
+              : m
+          )
+        );
       }
-
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === messageId
+    } catch (err) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMsgId
             ? {
                 ...m,
-                agentSteps: m.agentSteps?.map(s =>
-                  s.id === approval.stepId
-                    ? { ...s, status: 'success', result: res.result }
-                    : s
-                )
+                isStreaming: false,
+                content: m.content
+                  ? `${m.content}\n\n⚠️ ${errMessage}`
+                  : `⚠️ ${errMessage}`,
               }
             : m
         )
       );
+    } finally {
+      setIsBusy(false);
+      abortControllerRef.current = null;
+    }
+  };
 
-      // Continue conversation with result
-      await runAgentTurn(messages, `Tool ${approval.toolName} succeeded: ${res.result}`);
+  const handleApproveStep = (stepId: string) => {
+    const resolver = approvalResolversRef.current.get(stepId);
+    if (resolver) {
+      approvalResolversRef.current.delete(stepId);
+      resolver(true);
+    }
+  };
+
+  const handleRejectStep = (stepId: string) => {
+    const resolver = approvalResolversRef.current.get(stepId);
+    if (resolver) {
+      approvalResolversRef.current.delete(stepId);
+      resolver(false);
+    }
+  };
+
+  const handleUndoStep = async (step: AgentToolStep) => {
+    try {
+      const updated = await undoCompletedAgentStep(step);
+      setMessages((prev) =>
+        prev.map((m) => ({
+          ...m,
+          agentSteps: m.agentSteps?.map((s) => (s.id === step.id ? updated : s)),
+        }))
+      );
+      showTransientBanner(`↶ Undid step #${step.stepNumber} (${step.toolName})`);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === messageId
-            ? {
-                ...m,
-                agentSteps: m.agentSteps?.map(s =>
-                  s.id === approval.stepId ? { ...s, status: 'failed', error: errorMsg } : s
-                )
-              }
-            : m
-        )
+      showTransientBanner(
+        `Undo failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   };
 
-  const handleRejectTool = (messageId: string, approval: ToolApproval) => {
-    setMessages(prev =>
-      prev.map(m =>
-        m.id === messageId
-          ? {
-              ...m,
-              toolApproval: { ...approval, isPending: false, approved: false },
-              agentSteps: m.agentSteps?.map(s =>
-                s.id === approval.stepId
-                  ? { ...s, status: 'failed', error: 'Action rejected by user.' }
-                  : s
-              )
-            }
-          : m
-      )
+  const handleRetryStep = async (step: AgentToolStep) => {
+    const retried = await executeAgentToolStep(step, settings);
+    setMessages((prev) =>
+      prev.map((m) => ({
+        ...m,
+        agentSteps: m.agentSteps?.map((s) => (s.id === step.id ? retried : s)),
+      }))
     );
   };
 
-  const handleContinueAgent = () => {
-    currentStepCountRef.current = 0;
-    setIsStepLimitReached(false);
-    runAgentTurn(messages, 'Please continue with the remaining steps.');
-  };
-
-  const handleUndoLastAction = async () => {
-    if (undoStack.length === 0) return;
-    const record = undoStack[undoStack.length - 1];
+  const handleContinueAgent = async () => {
+    const active = activeAgentSessionRef.current;
+    if (!active || isBusy) return;
+    setIsBusy(true);
     try {
-      const resultMsg = await agentService.undoAction(record);
-      setUndoStack(prev => prev.slice(0, -1));
-      setMessages(prev => [
-        ...prev,
-        {
-          id: `msg-undo-${Date.now()}`,
-          role: 'assistant',
-          content: `🔄 **Undo successful:** ${resultMsg}`,
-          timestamp: Date.now()
-        }
-      ]);
-    } catch (err) {
-      alert(`Undo failed: ${err instanceof Error ? err.message : String(err)}`);
+      const session = await runAgentLoop({
+        settings,
+        history: messages,
+        userPrompt: active.userPrompt,
+        attachments: active.attachments,
+        requirements,
+        existingSession: active.session,
+        maxAdditionalSteps: settings.agentMaxSteps || 8,
+        onUpdate: (updated) => {
+          activeAgentSessionRef.current = { ...active, session: updated };
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === active.messageId
+                ? {
+                    ...m,
+                    content:
+                      updated.finalText ||
+                      `Executed ${updated.steps.length} slide step(s).`,
+                    agentSteps: [...updated.steps],
+                    awaitingContinue: updated.awaitingContinue,
+                  }
+                : m
+            )
+          );
+        },
+        requestApproval: (step) =>
+          new Promise<boolean>((resolve) => {
+            approvalResolversRef.current.set(step.id, resolve);
+          }),
+      });
+      activeAgentSessionRef.current = { ...active, session };
+    } finally {
+      setIsBusy(false);
     }
   };
 
-  /**
-   * Quick Actions dispatch
-   */
-  const handleQuickAction = async (actionKey: string) => {
-    switch (actionKey) {
-      case 'rewrite': {
-        const selected = await pptService.getSelectedText();
-        if (!selected) {
-          alert('Please select text inside a slide textbox to rewrite.');
-          return;
-        }
-        await handleSendMessage(
-          `Please rewrite and polish the following selected text for clarity and impact, preserving all technical petroleum terms and units:\n"""\n${selected}\n"""`,
-          []
-        );
-        break;
+  const handleRunQuickAction = async (action: QuickActionType) => {
+    const selectedOrSlideText =
+      (await getSelectedText()) ||
+      (await readSlide(await getActiveSlideIndex())).fullText;
+
+    if (action === "convert_units") {
+      const { convertedText, conversions } =
+        appendConvertedUnitsToText(selectedOrSlideText);
+      if (conversions.length > 0) {
+        const summaryLines = conversions.map((c) => `• ${c.formatted}`).join("\n");
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `sys-units-${Date.now()}`,
+            role: "assistant",
+            content: `🛢️ **Petroleum Unit Conversions Found (${conversions.length}):**\n${summaryLines}\n\n**Converted Text:**\n${convertedText}`,
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
       }
-
-      case 'translate_ar': {
-        const selected = await pptService.getSelectedText();
-        if (!selected) {
-          alert('Please select text inside a slide textbox to translate to Arabic.');
-          return;
-        }
-        await handleSendMessage(
-          `Translate the following text into professional Arabic with RTL direction. Keep all engineering acronyms, well names, and units (ESP, TDH, PIP, GOR, BHP, bbl/d) untouched in English:\n"""\n${selected}\n"""`,
-          []
-        );
-        break;
-      }
-
-      case 'bilingual': {
-        const selected = await pptService.getSelectedText();
-        if (!selected) {
-          alert('Please select text to format as bilingual.');
-          return;
-        }
-        await handleSendMessage(
-          `Format the following text in Bilingual mode (English LTR followed by Arabic RTL), keeping technical terms intact:\n"""\n${selected}\n"""`,
-          []
-        );
-        break;
-      }
-
-      case 'summarize': {
-        const overview = await pptService.getPresentationOverview();
-        const activeSlide = await pptService.readSlide(overview.activeSlideIndex || 1);
-        await handleSendMessage(
-          `Summarize the key takeaways of Slide ${overview.activeSlideIndex || 1} ("${activeSlide.title}") into 3 high-impact bullet points:\n${activeSlide.allText}`,
-          []
-        );
-        break;
-      }
-
-      case 'speaker_notes': {
-        const overview = await pptService.getPresentationOverview();
-        const idx = overview.activeSlideIndex || 1;
-        setIsStreaming(true);
-        try {
-          const notes = await pptFeaturesService.generateSpeakerNotesForSlide(idx, settings);
-          setMessages(prev => [
-            ...prev,
-            {
-              id: `msg-notes-${Date.now()}`,
-              role: 'assistant',
-              content: `🎙️ **Speaker notes generated and added to Slide ${idx}:**\n\n${notes}`,
-              timestamp: Date.now()
-            }
-          ]);
-        } catch (err) {
-          alert(err instanceof Error ? err.message : 'Failed to generate speaker notes.');
-        } finally {
-          setIsStreaming(false);
-        }
-        break;
-      }
-
-      case 'text_fit': {
-        const overview = await pptService.getPresentationOverview();
-        const idx = overview.activeSlideIndex || 1;
-        setIsStreaming(true);
-        try {
-          const res = await pptFeaturesService.shortenSlideText(idx, settings);
-          setMessages(prev => [
-            ...prev,
-            {
-              id: `msg-fit-${Date.now()}`,
-              role: 'assistant',
-              content: `✂️ **Shortened Text for Slide ${idx}:**\n\n${res.shortenedText}\n\n*Would you like me to replace the bullets on Slide ${idx}?*`,
-              timestamp: Date.now()
-            }
-          ]);
-        } catch (err) {
-          alert(err instanceof Error ? err.message : 'Failed to fit text.');
-        } finally {
-          setIsStreaming(false);
-        }
-        break;
-      }
-
-      case 'report_to_deck':
-        setIsDeckModalOpen(true);
-        break;
-
-      case 'excel_to_slide':
-        setIsResultsModalOpen(true);
-        break;
-
-      case 'consistency_audit': {
-        setIsStreaming(true);
-        try {
-          const issues = await pptFeaturesService.checkDeckConsistency(settings);
-          if (issues.length === 0) {
-            setMessages(prev => [
-              ...prev,
-              {
-                id: `msg-audit-${Date.now()}`,
-                role: 'assistant',
-                content: '✅ **Consistency Audit Complete:** No issues found! Font styles, title capitalization, and protected terms are aligned across all slides.',
-                timestamp: Date.now()
-              }
-            ]);
-          } else {
-            const report = issues
-              .map(iss => `- **Slide ${iss.slideIndex} (${iss.type}):** ${iss.description}`)
-              .join('\n');
-            setMessages(prev => [
-              ...prev,
-              {
-                id: `msg-audit-${Date.now()}`,
-                role: 'assistant',
-                content: `🔍 **Consistency Audit Findings (${issues.length} item(s)):**\n\n${report}\n\n*Ask me to fix any of these slides!*`,
-                timestamp: Date.now()
-              }
-            ]);
-          }
-        } catch (err) {
-          alert(err instanceof Error ? err.message : 'Audit failed.');
-        } finally {
-          setIsStreaming(false);
-        }
-        break;
-      }
+      await executeSendPrompt(
+        `Convert all petroleum engineering units (bbl/d, stb/d, psi, ft, °F, scf/stb) in the following slide text into their metric/field equivalents:\n\n${selectedOrSlideText}`
+      );
+      return;
     }
-  };
 
-  const handleExportChat = () => {
-    exportService.downloadAsFile(messages);
-  };
-
-  const handleClearChat = () => {
-    if (window.confirm('Clear current chat history?')) {
-      setMessages([]);
-      storageService.clearChatHistory();
+    if (action === "speaker_notes") {
+      if (!isAuthConfigured(settings)) {
+        setSettingsOpen(true);
+        return;
+      }
+      setIsBusy(true);
+      try {
+        const activeSlide = await getActiveSlideIndex();
+        const { notes, undoSnapshot } = await generateSpeakerNotesForSlide(
+          activeSlide,
+          settings,
+          true
+        );
+        if (undoSnapshot) pushUndoSnapshots([undoSnapshot]);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `notes-${Date.now()}`,
+            role: "assistant",
+            content: `🎙️ **Speaker Notes Written to Slide #${activeSlide}:**\n\n${notes}`,
+            timestamp: Date.now(),
+            direction: detectTextDirection(notes, settings.directionMode),
+          },
+        ]);
+      } catch (err) {
+        showTransientBanner(
+          `Speaker notes error: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } finally {
+        setIsBusy(false);
+      }
+      return;
     }
-  };
 
-  const handleAddSavedPrompt = (prompt: SavedPrompt) => {
-    const updated = [...savedPrompts, prompt];
-    setSavedPrompts(updated);
-    storageService.saveSavedPrompts(updated);
+    const langRules = buildDirectionAndLanguageInstruction(settings);
+    const promptsByAction: Record<QuickActionType, string> = {
+      rewrite: `Rewrite the following slide text to be crisp, executive-ready, and high-impact for PowerPoint:\n${langRules}\n\nTEXT:\n${selectedOrSlideText}`,
+      translate_ar: `Translate the following slide text into professional Arabic (Right-to-Left), keeping all protected engineering terms (ESP, TDH, PIP, GOR, BHP, bbl/d, well names, and numbers with units) unchanged in Latin script:\n\nTEXT:\n${selectedOrSlideText}`,
+      translate_en: `Translate the following slide text into crisp professional English, keeping all protected engineering terms (ESP, TDH, PIP, GOR, BHP, bbl/d, well names, and units) unchanged:\n\nTEXT:\n${selectedOrSlideText}`,
+      translate_bilingual: `Create a Bilingual (English + Arabic) version of this slide content. Put each English bullet/heading followed by its Arabic counterpart, keeping all protected terms (ESP, TDH, PIP, GOR, BHP, bbl/d, well names, units) unchanged:\n\nTEXT:\n${selectedOrSlideText}`,
+      summarize: `Summarize the following slide content into 4 concise bullet points with key quantitative takeaways:\n${langRules}\n\nTEXT:\n${selectedOrSlideText}`,
+      shorten_fit: `Shorten these bullets so they fit cleanly inside a single PowerPoint placeholder (max 12 words per bullet) while keeping all numbers and protected terms:\n\nTEXT:\n${selectedOrSlideText}`,
+      speaker_notes: "",
+      convert_units: "",
+    };
+
+    await executeSendPrompt(promptsByAction[action]);
   };
 
   return (
-    <FluentProvider theme={resolvedTheme} className="zee-app-root">
-      {/* Header */}
+    <FluentProvider
+      theme={isDark ? webDarkTheme : webLightTheme}
+      className="zee-app-root"
+    >
       <Header
-        darkMode={settings.darkMode}
-        onToggleDarkMode={toggleDarkMode}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onExportChat={handleExportChat}
-        onClearChat={handleClearChat}
-        hasMessages={messages.length > 0}
-        isOfficeReady={isOfficeReady}
+        settings={settings}
+        requirements={requirements}
+        isDark={isDark}
+        onToggleTheme={() =>
+          handleUpdateSettings({ appearance: isDark ? "light" : "dark" })
+        }
+        onToggleAgentMode={(enabled) => handleUpdateSettings({ agentMode: enabled })}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onExportChat={() => {
+          downloadChatTranscript(messages);
+          showTransientBanner("Exported chat transcript (.md)");
+        }}
+        onClearChat={() => {
+          clearChatHistory(docId);
+          setMessages([]);
+          showTransientBanner("Cleared chat history for this presentation.");
+        }}
+        canUndoLast={undoStack.length > 0}
+        onUndoLast={handleUndoLast}
       />
 
-      {/* Quick Actions Bar */}
       <QuickActions
-        onAction={handleQuickAction}
-        isLoading={isStreaming}
-        requirementStatus={requirementStatus}
+        requirements={requirements}
+        settings={settings}
+        disabled={isBusy}
+        onRunQuickAction={handleRunQuickAction}
+        onOpenReportToDeck={() => setDeckModalMode("report_to_deck")}
+        onOpenExcelToSlide={() => setExcelModalOpen(true)}
+        onOpenConsistencyChecker={() => setDeckModalMode("consistency")}
+        onOpenTextFitFixer={() => setDeckModalMode("text_fit")}
       />
 
-      {/* Chat Messages */}
+      {statusBanner && (
+        <div
+          style={{
+            padding: "6px 10px",
+            background: "rgba(183, 54, 24, 0.12)",
+            borderBottom: "1px solid rgba(183, 54, 24, 0.3)",
+            fontSize: 11,
+            fontWeight: 600,
+            flexShrink: 0,
+          }}
+        >
+          {statusBanner}
+        </div>
+      )}
+
+      {/* Cost Guard Warning Banner */}
+      {pendingCostGuard && (
+        <div
+          style={{
+            padding: "8px 10px",
+            background: "rgba(216, 59, 1, 0.14)",
+            borderBottom: "1px solid #d83b01",
+            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            flexShrink: 0,
+          }}
+        >
+          <span>
+            ⚠️ <b>Cost Guard:</b> Estimated prompt size is ~
+            {pendingCostGuard.estimatedTokens.toLocaleString()} tokens (limit:{" "}
+            {pendingCostGuard.limit.toLocaleString()}). Send anyway?
+          </span>
+          <div style={{ display: "flex", gap: 4 }}>
+            <Button
+              size="small"
+              appearance="primary"
+              onClick={() =>
+                executeSendPrompt(
+                  pendingCostGuard.text,
+                  pendingCostGuard.attachments,
+                  true
+                )
+              }
+              style={{ backgroundColor: "#b73618", fontSize: 11 }}
+            >
+              Send
+            </Button>
+            <Button
+              size="small"
+              appearance="outline"
+              onClick={() => setPendingCostGuard(null)}
+              style={{ fontSize: 11 }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
       <ChatFeed
         messages={messages}
-        onApproveTool={handleApproveTool}
-        onRejectTool={handleRejectTool}
+        settings={settings}
+        isDark={isDark}
+        onCopyMessage={async (text) => {
+          await copyTextToClipboard(text);
+          showTransientBanner("Copied to clipboard!");
+        }}
+        onInsertIntoSlide={async (text) => {
+          const msg = await exportTextToSlideElement(
+            text,
+            "current_slide_box",
+            settings
+          );
+          showTransientBanner(msg);
+        }}
+        onCreateSlideFromMessage={async (text) => {
+          const msg = await exportTextToSlideElement(text, "new_slide", settings);
+          showTransientBanner(msg);
+        }}
+        onApproveStep={handleApproveStep}
+        onRejectStep={handleRejectStep}
+        onUndoStep={handleUndoStep}
+        onRetryStep={handleRetryStep}
         onContinueAgent={handleContinueAgent}
-        isStepLimitReached={isStepLimitReached}
-        onUndoLastAction={handleUndoLastAction}
-        canUndo={undoStack.length > 0}
-        lastUndoDescription={undoStack[undoStack.length - 1]?.description}
-        isStreaming={isStreaming}
       />
 
-      {/* Chat Input */}
       <ChatInput
-        onSendMessage={handleSendMessage}
-        isLoading={isStreaming}
-        onStop={handleStopStreaming}
-        webSearchEnabled={settings.webSearch}
-        onToggleWebSearch={() => setSettings(p => ({ ...p, webSearch: !p.webSearch }))}
-        codeExecutionEnabled={settings.codeExecution}
-        onToggleCodeExecution={() => setSettings(p => ({ ...p, codeExecution: !p.codeExecution }))}
+        settings={settings}
+        isBusy={isBusy}
         savedPrompts={savedPrompts}
-        onAddSavedPrompt={handleAddSavedPrompt}
+        onSend={(text, attachments) => executeSendPrompt(text, attachments)}
+        onStop={() => abortControllerRef.current?.abort()}
+        onUpdateSettings={handleUpdateSettings}
+        onAddCustomPrompt={(title, prompt) => {
+          const next: SavedPrompt[] = [
+            ...savedPrompts,
+            {
+              id: `custom-${Date.now()}`,
+              title,
+              prompt,
+              category: "custom",
+            },
+          ];
+          setSavedPrompts(next);
+          saveCustomPrompts(next);
+        }}
+        onDeleteCustomPrompt={(id) => {
+          const next = savedPrompts.filter((p) => p.id !== id);
+          setSavedPrompts(next);
+          saveCustomPrompts(next);
+        }}
       />
 
-      {/* Eagerly Loaded Settings Drawer */}
+      {/* Eagerly loaded Settings Drawer & PowerPoint Modals */}
       <SettingsDrawer
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
+        open={settingsOpen}
         settings={settings}
-        onSave={setSettings}
-        requirementStatus={requirementStatus}
+        requirements={requirements}
+        availableLayouts={availableLayouts}
+        onClose={() => setSettingsOpen(false)}
+        onUpdateSettings={handleUpdateSettings}
       />
 
-      {/* Report to Deck Modal */}
       <PowerPointDeckModal
-        isOpen={isDeckModalOpen}
-        onClose={() => setIsDeckModalOpen(false)}
+        mode={deckModalMode}
         settings={settings}
-        onDeckBuilt={count => {
-          setMessages(prev => [
+        onClose={() => setDeckModalMode(null)}
+        onCompleted={(summaryMessage, snaps) => {
+          pushUndoSnapshots(snaps);
+          setMessages((prev) => [
             ...prev,
             {
-              id: `msg-deck-${Date.now()}`,
-              role: 'assistant',
-              content: `🎉 **Presentation Created:** Successfully built **${count} slides** with speaker notes into your presentation!`,
-              timestamp: Date.now()
-            }
+              id: `deck-action-${Date.now()}`,
+              role: "assistant",
+              content: `✅ ${summaryMessage}`,
+              timestamp: Date.now(),
+            },
           ]);
         }}
       />
 
-      {/* Results Slide Modal */}
       <ResultsSlideModal
-        isOpen={isResultsModalOpen}
-        onClose={() => setIsResultsModalOpen(false)}
+        open={excelModalOpen}
         settings={settings}
-        onSlideCreated={slideIdx => {
-          setMessages(prev => [
+        onClose={() => setExcelModalOpen(false)}
+        onCompleted={(summaryMessage, snaps) => {
+          pushUndoSnapshots(snaps);
+          setMessages((prev) => [
             ...prev,
             {
-              id: `msg-results-${Date.now()}`,
-              role: 'assistant',
-              content: `📊 **Results Slide Created:** Added executive results summary at Slide ${slideIdx}.`,
-              timestamp: Date.now()
-            }
+              id: `excel-action-${Date.now()}`,
+              role: "assistant",
+              content: `📊 ${summaryMessage}`,
+              timestamp: Date.now(),
+            },
           ]);
         }}
       />

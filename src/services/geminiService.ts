@@ -1,257 +1,453 @@
-import { Attachment } from '../types/chat';
-import { AppSettings } from '../types/settings';
+import { ZeeSettings } from "../types/settings";
+import { ChatAttachment, ChatMessage, GroundingCitation } from "../types/chat";
+import { buildGeminiEndpoint } from "./authService";
+import { buildDirectionAndLanguageInstruction } from "./arabicService";
 
-export interface FunctionDeclaration {
+export interface GeminiFunctionDeclaration {
   name: string;
   description: string;
   parameters: {
-    type: string;
-    properties: Record<string, unknown>;
+    type: "OBJECT";
+    properties: Record<
+      string,
+      {
+        type: "STRING" | "NUMBER" | "INTEGER" | "BOOLEAN" | "ARRAY" | "OBJECT";
+        description: string;
+        items?: { type: string };
+        enum?: string[];
+      }
+    >;
     required?: string[];
   };
 }
 
-export interface ToolCall {
+export interface GeminiFunctionCall {
   name: string;
   args: Record<string, unknown>;
 }
 
-export interface GeminiStreamChunk {
-  textDelta?: string;
-  toolCalls?: ToolCall[];
-  tokenCount?: number;
+export interface GeminiPart {
+  text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
+  functionCall?: GeminiFunctionCall;
+  functionResponse?: {
+    name: string;
+    response: Record<string, unknown>;
+  };
+  executableCode?: {
+    language: string;
+    code: string;
+  };
+  codeExecutionResult?: {
+    outcome: string;
+    output: string;
+  };
 }
 
-export const geminiService = {
-  /**
-   * Builds the API endpoint URL taking into account direct Google API or Cloudflare team proxy
-   */
-  getEndpoint(action: 'streamGenerateContent' | 'generateContent' | 'countTokens', settings: AppSettings): string {
-    const model = settings.model || 'gemini-2.5-flash';
-    if (settings.teamProxyUrl && settings.teamProxyUrl.trim()) {
-      let base = settings.teamProxyUrl.trim().replace(/\/+$/, '');
-      return `${base}/v1beta/models/${model}:${action}`;
+export interface GeminiTurnContent {
+  role: "user" | "model";
+  parts: GeminiPart[];
+}
+
+export interface CostGuardEvaluation {
+  estimatedTokens: number;
+  limit: number;
+  exceedsLimit: boolean;
+}
+
+/**
+ * Estimates prompt token count for text, conversation history, and attachments
+ * (images ~258 tokens each, PDF pages/bytes ~1 token per 12 bytes of base64).
+ */
+export function estimatePromptTokens(
+  prompt: string,
+  history: ChatMessage[] = [],
+  attachments: ChatAttachment[] = [],
+  systemContext: string = ""
+): number {
+  let chars = (prompt?.length || 0) + (systemContext?.length || 0);
+  for (const msg of history.slice(-12)) {
+    chars += msg.content?.length || 0;
+  }
+
+  let tokens = Math.ceil(chars / 3.8);
+
+  for (const att of attachments) {
+    if (att.kind === "image") {
+      tokens += 260;
+    } else if (att.kind === "pdf") {
+      tokens += Math.max(300, Math.ceil((att.sizeBytes || att.base64Data.length) / 14));
+    } else if (att.textContent) {
+      tokens += Math.ceil(att.textContent.length / 3.8);
     }
-    return `https://generativelanguage.googleapis.com/v1beta/models/${model}:${action}?key=${settings.geminiApiKey.trim()}`;
-  },
+  }
 
-  /**
-   * Prepares request headers (supports Team Proxy token or Google OAuth bearer token)
-   */
-  getHeaders(settings: AppSettings): HeadersInit {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json'
-    };
+  return tokens;
+}
 
-    if (settings.teamProxyToken && settings.teamProxyToken.trim()) {
-      headers['X-Proxy-Token'] = settings.teamProxyToken.trim();
-      headers['Authorization'] = `Bearer ${settings.teamProxyToken.trim()}`;
-    } else if (settings.googleAuthToken && settings.googleAuthToken.trim()) {
-      headers['Authorization'] = `Bearer ${settings.googleAuthToken.trim()}`;
-    }
+export function evaluateCostGuard(
+  settings: ZeeSettings,
+  prompt: string,
+  history: ChatMessage[] = [],
+  attachments: ChatAttachment[] = [],
+  systemContext: string = ""
+): CostGuardEvaluation {
+  const estimatedTokens = estimatePromptTokens(prompt, history, attachments, systemContext);
+  const limit = Math.max(500, settings.costGuardTokenLimit || 12000);
+  return {
+    estimatedTokens,
+    limit,
+    exceedsLimit: Boolean(settings.costGuardEnabled && estimatedTokens > limit),
+  };
+}
 
-    return headers;
-  },
+export function buildSystemInstruction(
+  settings: ZeeSettings,
+  presentationContextSummary?: string
+): string {
+  const lines: string[] = [
+    "You are Zee AI for PowerPoint, an expert AI presentation assistant, slide designer, and petroleum/reservoir engineering analyst embedded inside Microsoft PowerPoint.",
+    "Always write crisp, executive-ready slide content with clear structure and accurate engineering figures.",
+    buildDirectionAndLanguageInstruction(settings),
+  ];
 
-  /**
-   * Estimates prompt token count using API or character heuristic
-   */
-  async estimateTokens(
-    prompt: string,
-    attachments: Attachment[] = [],
-    settings: AppSettings
-  ): Promise<number> {
-    try {
-      if (settings.geminiApiKey || settings.teamProxyUrl) {
-        const url = this.getEndpoint('countTokens', settings);
-        const headers = this.getHeaders(settings);
+  if (settings.companyTemplate?.enabled) {
+    const tpl = settings.companyTemplate;
+    lines.push(
+      `COMPANY TEMPLATE MODE IS ACTIVE: Use layout "${tpl.layoutName}", heading font "${tpl.headingFont}", body font "${tpl.bodyFont}", primary color ${tpl.primaryColor}, accent color ${tpl.accentColor}, and footer "${tpl.footerText}".`
+    );
+  }
 
-        const parts: unknown[] = [{ text: prompt }];
-        for (const att of attachments) {
-          parts.push({
-            inlineData: {
-              mimeType: att.mimeType,
-              data: att.base64Data
-            }
-          });
-        }
+  if (presentationContextSummary) {
+    lines.push("CURRENT PRESENTATION CONTEXT (compact summary):\n" + presentationContextSummary);
+  }
 
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts }]
-          })
-        });
+  return lines.filter(Boolean).join("\n\n");
+}
 
-        if (res.ok) {
-          const data = await res.json();
-          if (data && typeof data.totalTokens === 'number') {
-            return data.totalTokens;
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('CountTokens call failed, falling back to heuristic:', e);
-    }
-
-    // Heuristic: ~4 chars per token for English, ~1.5 chars per token for Arabic
-    let charTokens = Math.ceil(prompt.length / 3);
-    for (const att of attachments) {
-      if (att.type === 'image') charTokens += 1000;
-      if (att.type === 'pdf') charTokens += 2000;
-    }
-    return charTokens;
-  },
-
-  /**
-   * Streams chat completions with function calling, search, code execution, and attachments
-   */
-  async *streamChat(options: {
-    messages: { role: string; content: string; attachments?: Attachment[] }[];
-    systemInstruction?: string;
-    tools?: FunctionDeclaration[];
-    settings: AppSettings;
-    signal?: AbortSignal;
-  }): AsyncGenerator<GeminiStreamChunk> {
-    const { messages, systemInstruction, tools, settings, signal } = options;
-
-    if (!settings.geminiApiKey && !settings.teamProxyUrl && !settings.googleAuthToken) {
-      throw new Error('Please enter your Gemini API key or configure Team Proxy in Settings.');
-    }
-
-    const url = `${this.getEndpoint('streamGenerateContent', settings)}&alt=sse`;
-    const headers = this.getHeaders(settings);
-
-    // Format contents
-    const contents = messages.map(m => {
-      const parts: unknown[] = [];
-      if (m.attachments && m.attachments.length > 0) {
-        for (const att of m.attachments) {
-          parts.push({
-            inlineData: {
-              mimeType: att.mimeType,
-              data: att.base64Data
-            }
-          });
-        }
-      }
-      if (m.content) {
-        parts.push({ text: m.content });
-      }
-      return {
-        role: m.role === 'user' ? 'user' : 'model',
-        parts
-      };
-    });
-
-    // Assemble tools
-    const geminiTools: unknown[] = [];
-
-    if (tools && tools.length > 0) {
-      geminiTools.push({
-        functionDeclarations: tools
+export function convertAttachmentsToGeminiParts(attachments: ChatAttachment[] = []): GeminiPart[] {
+  const parts: GeminiPart[] = [];
+  for (const att of attachments) {
+    if (att.kind === "text" && att.textContent) {
+      parts.push({
+        text: `[Attached File: ${att.name}]\n${att.textContent}`,
+      });
+    } else if (att.base64Data) {
+      parts.push({
+        inlineData: {
+          mimeType: att.mimeType || (att.kind === "pdf" ? "application/pdf" : "image/png"),
+          data: att.base64Data,
+        },
       });
     }
+  }
+  return parts;
+}
 
-    if (settings.webSearch) {
-      geminiTools.push({ googleSearch: {} });
-    }
+export function buildGeminiContents(
+  history: ChatMessage[],
+  userPrompt: string,
+  attachments: ChatAttachment[] = []
+): GeminiTurnContent[] {
+  const contents: GeminiTurnContent[] = [];
 
-    if (settings.codeExecution) {
-      geminiTools.push({ codeExecution: {} });
-    }
-
-    const requestBody: Record<string, unknown> = {
-      contents,
-      generationConfig: {
-        temperature: 0.3,
-        topP: 0.95
-      }
-    };
-
-    if (systemInstruction) {
-      requestBody.systemInstruction = {
-        role: 'system',
-        parts: [{ text: systemInstruction }]
-      };
-    }
-
-    if (geminiTools.length > 0) {
-      requestBody.tools = geminiTools;
-    }
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody),
-      signal
+  for (const msg of history.slice(-14)) {
+    if (!msg.content?.trim() || msg.role === "system") continue;
+    contents.push({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }],
     });
+  }
 
-    if (!response.ok) {
-      const errText = await response.text();
-      let errorMsg = `Gemini API error (${response.status}): ${errText}`;
-      try {
-        const errJson = JSON.parse(errText);
-        if (errJson.error?.message) {
-          errorMsg = errJson.error.message;
-        }
-      } catch {
-        // use raw text
-      }
-      throw new Error(errorMsg);
+  const userParts: GeminiPart[] = [
+    ...convertAttachmentsToGeminiParts(attachments),
+    { text: userPrompt },
+  ];
+
+  contents.push({
+    role: "user",
+    parts: userParts,
+  });
+
+  return contents;
+}
+
+export function buildToolsPayload(
+  settings: ZeeSettings,
+  functionDeclarations?: GeminiFunctionDeclaration[]
+): Record<string, unknown>[] | undefined {
+  // When Agent function declarations are provided, prioritize function calling
+  if (functionDeclarations && functionDeclarations.length > 0) {
+    return [{ functionDeclarations }];
+  }
+
+  const tools: Record<string, unknown>[] = [];
+  if (settings.webSearchEnabled) {
+    tools.push({ google_search: {} });
+  }
+  if (settings.codeExecutionEnabled) {
+    tools.push({ code_execution: {} });
+  }
+  return tools.length > 0 ? tools : undefined;
+}
+
+export interface GeminiGenerationResult {
+  text: string;
+  functionCalls: GeminiFunctionCall[];
+  citations: GroundingCitation[];
+  codeExecutionOutput?: string;
+  rawModelParts: GeminiPart[];
+}
+
+export function extractResultFromCandidate(candidate: Record<string, any>): GeminiGenerationResult {
+  const parts: GeminiPart[] = candidate?.content?.parts || [];
+  let text = "";
+  const functionCalls: GeminiFunctionCall[] = [];
+  const codeBlocks: string[] = [];
+
+  for (const part of parts) {
+    if (typeof part.text === "string") {
+      text += part.text;
     }
-
-    if (!response.body) {
-      throw new Error('No response body returned from Gemini.');
+    if (part.functionCall && part.functionCall.name) {
+      functionCalls.push({
+        name: part.functionCall.name,
+        args: (part.functionCall.args as Record<string, unknown>) || {},
+      });
     }
+    if (part.executableCode?.code) {
+      codeBlocks.push(
+        `\`\`\`${(part.executableCode.language || "python").toLowerCase()}\n${part.executableCode.code}\n\`\`\``
+      );
+    }
+    if (part.codeExecutionResult?.output) {
+      codeBlocks.push(`**Execution Output:**\n\`\`\`text\n${part.codeExecutionResult.output}\n\`\`\``);
+    }
+  }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data:')) continue;
-
-        const jsonStr = trimmed.replace(/^data:\s*/, '');
-        if (jsonStr === '[DONE]') continue;
-
-        try {
-          const chunk = JSON.parse(jsonStr);
-          const candidate = chunk.candidates?.[0];
-          if (!candidate) continue;
-
-          const parts = candidate.content?.parts;
-          if (parts && Array.isArray(parts)) {
-            for (const part of parts) {
-              if (part.text) {
-                yield { textDelta: part.text };
-              }
-              if (part.functionCall) {
-                yield {
-                  toolCalls: [
-                    {
-                      name: part.functionCall.name,
-                      args: part.functionCall.args || {}
-                    }
-                  ]
-                };
-              }
-            }
-          }
-        } catch {
-          // partial line or parsing skip
-        }
+  const citations: GroundingCitation[] = [];
+  const chunks = candidate?.groundingMetadata?.groundingChunks;
+  if (Array.isArray(chunks)) {
+    for (const chunk of chunks) {
+      if (chunk?.web?.uri) {
+        citations.push({
+          title: chunk.web.title || chunk.web.uri,
+          uri: chunk.web.uri,
+        });
       }
     }
   }
-};
+
+  return {
+    text,
+    functionCalls,
+    citations,
+    codeExecutionOutput: codeBlocks.length > 0 ? codeBlocks.join("\n\n") : undefined,
+    rawModelParts: parts,
+  };
+}
+
+export async function countTokensWithGemini(
+  settings: ZeeSettings,
+  contents: GeminiTurnContent[]
+): Promise<number> {
+  const { url, headers } = buildGeminiEndpoint(settings, "countTokens", false);
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ contents }),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`countTokens failed (${res.status}): ${errText}`);
+  }
+  const data = await res.json();
+  return Number(data.totalTokens) || 0;
+}
+
+export async function generateGeminiTurn(
+  settings: ZeeSettings,
+  contents: GeminiTurnContent[],
+  options: {
+    systemInstruction?: string;
+    functionDeclarations?: GeminiFunctionDeclaration[];
+    signal?: AbortSignal;
+  } = {}
+): Promise<GeminiGenerationResult> {
+  const { url, headers } = buildGeminiEndpoint(settings, "generateContent", false);
+  const tools = buildToolsPayload(settings, options.functionDeclarations);
+
+  const body: Record<string, unknown> = {
+    contents,
+    generationConfig: {
+      temperature: settings.temperature ?? 0.3,
+    },
+  };
+
+  if (options.systemInstruction) {
+    body.systemInstruction = {
+      parts: [{ text: options.systemInstruction }],
+    };
+  }
+  if (tools) {
+    body.tools = tools;
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Gemini API Error (${res.status}): ${errBody}`);
+  }
+
+  const json = await res.json();
+  const candidate = json?.candidates?.[0] || {};
+  return extractResultFromCandidate(candidate);
+}
+
+/**
+ * Streams a chat response from Gemini using SSE (?alt=sse) with automatic
+ * fallback to standard JSON parsing if the proxy returns a non-SSE response.
+ */
+export async function streamGeminiChat(
+  settings: ZeeSettings,
+  history: ChatMessage[],
+  userPrompt: string,
+  options: {
+    attachments?: ChatAttachment[];
+    presentationContextSummary?: string;
+    onChunk: (accumulatedText: string, citations: GroundingCitation[], codeOutput?: string) => void;
+    signal?: AbortSignal;
+  }
+): Promise<GeminiGenerationResult> {
+  const { url, headers } = buildGeminiEndpoint(settings, "streamGenerateContent", true);
+  const contents = buildGeminiContents(history, userPrompt, options.attachments);
+  const systemInstruction = buildSystemInstruction(settings, options.presentationContextSummary);
+  const tools = buildToolsPayload(settings);
+
+  const body: Record<string, unknown> = {
+    contents,
+    systemInstruction: {
+      parts: [{ text: systemInstruction }],
+    },
+    generationConfig: {
+      temperature: settings.temperature ?? 0.3,
+    },
+  };
+
+  if (tools) {
+    body.tools = tools;
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Gemini Streaming Error (${res.status}): ${errBody}`);
+  }
+
+  if (!res.body) {
+    const fallbackJson = await res.json();
+    const result = extractResultFromCandidate(fallbackJson?.candidates?.[0] || {});
+    options.onChunk(result.text, result.citations, result.codeExecutionOutput);
+    return result;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+
+  let buffer = "";
+  let accumulatedText = "";
+  let allCitations: GroundingCitation[] = [];
+  let accumulatedCodeOutput = "";
+  const allParts: GeminiPart[] = [];
+
+  const processDataObject = (parsed: any) => {
+    const candidate = parsed?.candidates?.[0];
+    if (!candidate) return;
+    const partial = extractResultFromCandidate(candidate);
+    if (partial.text) {
+      accumulatedText += partial.text;
+    }
+    if (partial.citations.length > 0) {
+      const seen = new Set(allCitations.map((c) => c.uri));
+      for (const c of partial.citations) {
+        if (!seen.has(c.uri)) {
+          allCitations.push(c);
+          seen.add(c.uri);
+        }
+      }
+    }
+    if (partial.codeExecutionOutput) {
+      accumulatedCodeOutput = accumulatedCodeOutput
+        ? `${accumulatedCodeOutput}\n\n${partial.codeExecutionOutput}`
+        : partial.codeExecutionOutput;
+    }
+    allParts.push(...partial.rawModelParts);
+    options.onChunk(
+      accumulatedText,
+      allCitations,
+      accumulatedCodeOutput || undefined
+    );
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const jsonStr = trimmed.slice(5).trim();
+      if (!jsonStr || jsonStr === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        processDataObject(parsed);
+      } catch {
+        // Ignore incomplete JSON line
+      }
+    }
+  }
+
+  if (buffer.trim().startsWith("data:")) {
+    const jsonStr = buffer.trim().slice(5).trim();
+    if (jsonStr && jsonStr !== "[DONE]") {
+      try {
+        processDataObject(JSON.parse(jsonStr));
+      } catch {
+        // Ignore
+      }
+    }
+  } else if (!accumulatedText && buffer.trim().startsWith("{")) {
+    try {
+      processDataObject(JSON.parse(buffer.trim()));
+    } catch {
+      // Ignore
+    }
+  }
+
+  return {
+    text: accumulatedText,
+    functionCalls: [],
+    citations: allCitations,
+    codeExecutionOutput: accumulatedCodeOutput || undefined,
+    rawModelParts: allParts,
+  };
+}

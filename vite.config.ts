@@ -1,39 +1,35 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import { getHttpsServerOptions } from 'office-addin-dev-certs';
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import { readFileSync } from "node:fs";
 
-// https://vitejs.dev/config/
-export default defineConfig(async () => {
-  let httpsConfig: unknown = true;
-  try {
-    httpsConfig = await getHttpsServerOptions();
-  } catch (e) {
-    console.warn('Could not load office-addin-dev-certs, falling back to default https:', e);
-  }
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
+const buildDate = new Date().toISOString().split("T")[0];
 
-  return {
-    plugins: [react()],
-    base: './', // CRITICAL: Use relative paths so assets work on GitHub Pages subpaths
-    server: {
-      port: 3300,
-      https: httpsConfig as boolean | object,
-      headers: {
-        'Access-Control-Allow-Origin': '*'
-      }
+export default defineConfig({
+  base: "./",
+  plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version || "1.2.0"),
+    __BUILD_DATE__: JSON.stringify(buildDate),
+  },
+  server: {
+    port: 3300,
+    strictPort: true,
+    cors: true,
+  },
+  preview: {
+    port: 3300,
+    strictPort: true,
+    cors: true,
+  },
+  build: {
+    outDir: "dist",
+    sourcemap: false,
+    assetsDir: "assets",
+    rollupOptions: {
+      output: {
+        manualChunks: undefined,
+      },
     },
-    build: {
-      outDir: 'dist',
-      sourcemap: false, // CRITICAL: Remove source maps from production builds
-      rollupOptions: {
-        input: {
-          main: './index.html'
-        }
-      }
-    },
-    // @ts-expect-error vitest options
-    test: {
-      globals: true,
-      environment: 'happy-dom'
-    }
-  };
+  },
 });

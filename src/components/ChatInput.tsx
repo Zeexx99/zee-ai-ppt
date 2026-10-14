@@ -1,276 +1,320 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState } from "react";
+import { Badge, Button, Textarea, Tooltip } from "@fluentui/react-components";
 import {
-  Button,
-  Textarea,
-  Tooltip,
-  Tag,
-  Badge
-} from '@fluentui/react-components';
-import {
-  Send24Regular,
-  Attach24Regular,
-  Dismiss16Regular,
-  Globe24Regular,
-  Code24Regular,
-  Stop24Regular
-} from '@fluentui/react-icons';
-import { Attachment, SavedPrompt } from '../types/chat';
-import { SavedPromptsMenu } from './SavedPromptsMenu';
+  Attach20Regular,
+  Send20Regular,
+  Stop20Regular,
+  Dismiss12Regular,
+} from "@fluentui/react-icons";
+import { ChatAttachment, SavedPrompt } from "../types/chat";
+import { ZeeSettings } from "../types/settings";
+import { detectTextDirection } from "../services/arabicService";
+import { SavedPromptsMenu } from "./SavedPromptsMenu";
 
 interface ChatInputProps {
-  onSendMessage: (text: string, attachments: Attachment[]) => void;
-  isLoading: boolean;
-  onStop: () => void;
-  webSearchEnabled: boolean;
-  onToggleWebSearch: () => void;
-  codeExecutionEnabled: boolean;
-  onToggleCodeExecution: () => void;
+  settings: ZeeSettings;
+  isBusy: boolean;
   savedPrompts: SavedPrompt[];
-  onAddSavedPrompt: (p: SavedPrompt) => void;
+  onSend: (text: string, attachments: ChatAttachment[]) => void;
+  onStop: () => void;
+  onUpdateSettings: (partial: Partial<ZeeSettings>) => void;
+  onAddCustomPrompt: (title: string, prompt: string) => void;
+  onDeleteCustomPrompt: (id: string) => void;
+}
+
+export async function fileToChatAttachment(file: File): Promise<ChatAttachment> {
+  const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  const isImage =
+    file.type.startsWith("image/") ||
+    /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
+
+  if (!isPdf && !isImage) {
+    const textContent = await file.text();
+    return {
+      id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: file.name,
+      mimeType: file.type || "text/plain",
+      kind: "text",
+      base64Data: "",
+      sizeBytes: file.size,
+      textContent,
+    };
+  }
+
+  const base64Data = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = String(reader.result || "");
+      const idx = res.indexOf(",");
+      resolve(idx >= 0 ? res.slice(idx + 1) : res);
+    };
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+
+  return {
+    id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: file.name,
+    mimeType: isPdf ? "application/pdf" : file.type || "image/png",
+    kind: isPdf ? "pdf" : "image",
+    base64Data,
+    sizeBytes: file.size,
+  };
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
-  onSendMessage,
-  isLoading,
-  onStop,
-  webSearchEnabled,
-  onToggleWebSearch,
-  codeExecutionEnabled,
-  onToggleCodeExecution,
+  settings,
+  isBusy,
   savedPrompts,
-  onAddSavedPrompt
+  onSend,
+  onStop,
+  onUpdateSettings,
+  onAddCustomPrompt,
+  onDeleteCustomPrompt,
 }) => {
-  const [text, setText] = useState('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const handleSend = () => {
-    if ((text.trim() || attachments.length > 0) && !isLoading) {
-      onSendMessage(text.trim(), attachments);
-      setText('');
-      setAttachments([]);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  const processFile = async (file: File) => {
-    if (!file.type.startsWith('image/') && file.type !== 'application/pdf') {
-      alert('Only images and PDF files are supported.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64Data = dataUrl.split(',')[1];
-      const newAtt: Attachment = {
-        id: `att-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-        name: file.name,
-        type: file.type === 'application/pdf' ? 'pdf' : 'image',
-        mimeType: file.type,
-        base64Data,
-        size: file.size
-      };
-      setAttachments(prev => [...prev, newAtt]);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files) {
-      for (let i = 0; i < files.length; i++) {
-        processFile(files[i]);
+  const handleFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files);
+    const converted: ChatAttachment[] = [];
+    for (const f of list) {
+      try {
+        converted.push(await fileToChatAttachment(f));
+      } catch {
+        // ignore unreadable file
       }
     }
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+    if (converted.length > 0) {
+      setAttachments((prev) => [...prev, ...converted]);
     }
   };
 
-  const handlePaste = (e: React.ClipboardEvent) => {
+  const handlePaste = async (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
-    if (items) {
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf('image') !== -1) {
-          const file = items[i].getAsFile();
-          if (file) {
-            processFile(file);
-          }
-        }
+    if (!items) return;
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file") {
+        const f = item.getAsFile();
+        if (f) files.push(f);
       }
+    }
+    if (files.length > 0) {
+      await handleFiles(files);
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const files = e.dataTransfer?.files;
-    if (files) {
-      for (let i = 0; i < files.length; i++) {
-        processFile(files[i]);
-      }
-    }
+  const handleSubmit = () => {
+    if (isBusy) return;
+    if (!input.trim() && attachments.length === 0) return;
+    onSend(input.trim() || "Analyze the attached file(s) for this presentation.", attachments);
+    setInput("");
+    setAttachments([]);
   };
 
-  const removeAttachment = (id: string) => {
-    setAttachments(prev => prev.filter(a => a.id !== id));
-  };
+  const inputDir = detectTextDirection(input, settings.directionMode);
 
   return (
     <div
-      style={{
-        padding: '8px 12px 12px 12px',
-        borderTop: '1px solid rgba(128,128,128,0.15)',
-        background: 'var(--colorNeutralBackground1)',
-        position: 'relative'
-      }}
-      onDragOver={e => {
+      onDragOver={(e) => {
         e.preventDefault();
         setIsDragging(true);
       }}
       onDragLeave={() => setIsDragging(false)}
-      onDrop={handleDrop}
+      onDrop={async (e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (e.dataTransfer?.files?.length) {
+          await handleFiles(e.dataTransfer.files);
+        }
+      }}
+      style={{
+        padding: "8px 10px",
+        borderTop: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+        background: isDragging ? "rgba(183, 54, 24, 0.08)" : undefined,
+        flexShrink: 0,
+      }}
     >
-      {/* Drag overlay */}
-      {isDragging && (
+      {/* Attachments preview bar */}
+      {attachments.length > 0 && (
         <div
           style={{
-            position: 'absolute',
-            inset: 0,
-            background: 'rgba(210, 71, 38, 0.1)',
-            border: '2px dashed #D24726',
-            borderRadius: '6px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontWeight: 600,
-            color: '#D24726',
-            zIndex: 10
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 4,
+            marginBottom: 6,
           }}
         >
-          Drop image or PDF to attach
-        </div>
-      )}
-
-      {/* Attachments preview list */}
-      {attachments.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
-          {attachments.map(att => (
-            <Tag
+          {attachments.map((att) => (
+            <Badge
               key={att.id}
               size="small"
-              appearance="brand"
-              dismissible
-              dismissIcon={<Dismiss16Regular />}
-              onClick={() => removeAttachment(att.id)}
+              appearance="tint"
+              color="brand"
+              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
             >
-              {att.type === 'pdf' ? '📄 ' : '🖼️ '}
-              {att.name}
-            </Tag>
+              <span>
+                {att.kind === "pdf" ? "📄" : att.kind === "image" ? "🖼️" : "📝"} {att.name}
+              </span>
+              <Dismiss12Regular
+                style={{ cursor: "pointer" }}
+                onClick={() =>
+                  setAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                }
+              />
+            </Badge>
           ))}
         </div>
       )}
 
-      {/* Input row */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      {/* Tool Toggles Row */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 4,
+          marginBottom: 6,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+          <SavedPromptsMenu
+            prompts={savedPrompts}
+            onSelectPrompt={(p) => setInput((prev) => (prev ? `${prev}\n${p}` : p))}
+            onAddCustomPrompt={onAddCustomPrompt}
+            onDeleteCustomPrompt={onDeleteCustomPrompt}
+          />
+
+          <Tooltip content="Toggle Google Search grounding" relationship="description">
+            <Button
+              size="small"
+              appearance={settings.webSearchEnabled ? "primary" : "subtle"}
+              onClick={() =>
+                onUpdateSettings({ webSearchEnabled: !settings.webSearchEnabled })
+              }
+              style={{
+                fontSize: 11,
+                padding: "2px 6px",
+                backgroundColor: settings.webSearchEnabled ? "#0f6cbd" : undefined,
+              }}
+            >
+              🌐 Web
+            </Button>
+          </Tooltip>
+
+          <Tooltip content="Toggle Gemini Python Code Execution" relationship="description">
+            <Button
+              size="small"
+              appearance={settings.codeExecutionEnabled ? "primary" : "subtle"}
+              onClick={() =>
+                onUpdateSettings({ codeExecutionEnabled: !settings.codeExecutionEnabled })
+              }
+              style={{
+                fontSize: 11,
+                padding: "2px 6px",
+                backgroundColor: settings.codeExecutionEnabled ? "#0f6cbd" : undefined,
+              }}
+            >
+              🐍 Code
+            </Button>
+          </Tooltip>
+
+          <Tooltip content="Toggle Bilingual Mode (English + Arabic)" relationship="description">
+            <Button
+              size="small"
+              appearance={settings.bilingualMode ? "primary" : "subtle"}
+              onClick={() => onUpdateSettings({ bilingualMode: !settings.bilingualMode })}
+              style={{
+                fontSize: 11,
+                padding: "2px 6px",
+                backgroundColor: settings.bilingualMode ? "#b73618" : undefined,
+              }}
+            >
+              EN+AR
+            </Button>
+          </Tooltip>
+        </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,application/pdf,.pdf,.txt,.csv,.md"
+          style={{ display: "none" }}
+          onChange={async (e) => {
+            if (e.target.files?.length) {
+              await handleFiles(e.target.files);
+              e.target.value = "";
+            }
+          }}
+        />
+      </div>
+
+      {/* Input box + Paperclip + Send/Stop */}
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+        <Tooltip
+          content="Attach image, PDF report, or CSV/text (or paste/drag-and-drop)"
+          relationship="description"
+        >
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<Attach20Regular />}
+            onClick={() => fileInputRef.current?.click()}
+            aria-label="Attach file"
+          />
+        </Tooltip>
+
         <Textarea
-          placeholder="Ask Zee AI to create slides, rewrite text, or analyze data..."
-          value={text}
-          onChange={(_, d) => setText(d.value)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
+          style={{ flex: 1, fontSize: 13 }}
+          dir={inputDir}
           rows={2}
-          style={{
-            width: '100%',
-            resize: 'none',
-            fontFamily: 'inherit',
-            fontSize: '13px'
+          resize="vertical"
+          placeholder={
+            settings.agentMode
+              ? "Ask Agent to read, add, edit, or format slides..."
+              : "Ask Zee AI or drop a PDF/image..."
+          }
+          value={input}
+          onPaste={handlePaste}
+          onChange={(_, data) => setInput(data.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmit();
+            }
           }}
         />
 
-        {/* Toolbar & Send Button */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-            <input
-              type="file"
-              ref={fileInputRef}
-              style={{ display: 'none' }}
-              accept="image/*,application/pdf"
-              multiple
-              onChange={handleFileInputChange}
+        {isBusy ? (
+          <Tooltip content="Stop current generation" relationship="label">
+            <Button
+              size="small"
+              appearance="primary"
+              icon={<Stop20Regular />}
+              onClick={onStop}
+              style={{ backgroundColor: "#d13438" }}
+              aria-label="Stop"
             />
-
-            <Tooltip content="Attach Image or PDF" relationship="label">
-              <Button
-                appearance="subtle"
-                size="small"
-                icon={<Attach24Regular style={{ fontSize: '16px' }} />}
-                onClick={() => fileInputRef.current?.click()}
-                aria-label="Attach file"
-              />
-            </Tooltip>
-
-            <SavedPromptsMenu
-              prompts={savedPrompts}
-              onSelectPrompt={p => setText(p)}
-              onAddPrompt={onAddSavedPrompt}
+          </Tooltip>
+        ) : (
+          <Tooltip content="Send message (Enter)" relationship="label">
+            <Button
+              size="small"
+              appearance="primary"
+              icon={<Send20Regular />}
+              onClick={handleSubmit}
+              disabled={!input.trim() && attachments.length === 0}
+              style={{ backgroundColor: "#b73618" }}
+              aria-label="Send"
             />
-
-            <Tooltip content={webSearchEnabled ? 'Web Search: ON' : 'Web Search: OFF'} relationship="label">
-              <Button
-                appearance={webSearchEnabled ? 'primary' : 'subtle'}
-                size="small"
-                icon={<Globe24Regular style={{ fontSize: '15px' }} />}
-                onClick={onToggleWebSearch}
-                aria-label="Toggle web search"
-                style={{ padding: '0 6px', minWidth: 'auto', height: '24px' }}
-              />
-            </Tooltip>
-
-            <Tooltip content={codeExecutionEnabled ? 'Code Execution: ON' : 'Code Execution: OFF'} relationship="label">
-              <Button
-                appearance={codeExecutionEnabled ? 'primary' : 'subtle'}
-                size="small"
-                icon={<Code24Regular style={{ fontSize: '15px' }} />}
-                onClick={onToggleCodeExecution}
-                aria-label="Toggle code execution"
-                style={{ padding: '0 6px', minWidth: 'auto', height: '24px' }}
-              />
-            </Tooltip>
-          </div>
-
-          <div>
-            {isLoading ? (
-              <Button
-                size="small"
-                appearance="secondary"
-                icon={<Stop24Regular style={{ fontSize: '16px', color: '#D24726' }} />}
-                onClick={onStop}
-              >
-                Stop
-              </Button>
-            ) : (
-              <Button
-                size="small"
-                appearance="primary"
-                icon={<Send24Regular style={{ fontSize: '16px' }} />}
-                disabled={!text.trim() && attachments.length === 0}
-                onClick={handleSend}
-                style={{ background: '#D24726', borderColor: '#D24726' }}
-              >
-                Send
-              </Button>
-            )}
-          </div>
-        </div>
+          </Tooltip>
+        )}
       </div>
     </div>
   );

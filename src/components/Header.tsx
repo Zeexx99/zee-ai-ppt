@@ -1,146 +1,168 @@
-import React from 'react';
+import React from "react";
 import {
-  Button,
-  Toolbar,
-  ToolbarButton,
   Badge,
-  Tooltip
-} from '@fluentui/react-components';
+  Button,
+  Switch,
+  Tooltip,
+} from "@fluentui/react-components";
 import {
-  Settings24Regular,
-  WeatherMoon24Regular,
-  WeatherSunny24Regular,
-  ArrowDownload24Regular,
-  Delete24Regular,
-  Sparkle24Regular
-} from '@fluentui/react-icons';
-import { DarkModeSetting } from '../types/settings';
+  WeatherMoon20Regular,
+  WeatherSunny20Regular,
+  Settings20Regular,
+  Delete20Regular,
+  ArrowDownload20Regular,
+  Bot20Regular,
+} from "@fluentui/react-icons";
+import { ZeeSettings } from "../types/settings";
+import { PowerPointApiRequirements } from "../types/ppt";
 
 interface HeaderProps {
-  darkMode: DarkModeSetting;
-  onToggleDarkMode: () => void;
+  settings: ZeeSettings;
+  requirements: PowerPointApiRequirements;
+  isDark: boolean;
+  onToggleTheme: () => void;
+  onToggleAgentMode: (enabled: boolean) => void;
   onOpenSettings: () => void;
   onExportChat: () => void;
   onClearChat: () => void;
-  hasMessages: boolean;
-  isOfficeReady: boolean;
+  canUndoLast: boolean;
+  onUndoLast: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  darkMode,
-  onToggleDarkMode,
+  settings,
+  requirements,
+  isDark,
+  onToggleTheme,
+  onToggleAgentMode,
   onOpenSettings,
   onExportChat,
   onClearChat,
-  hasMessages,
-  isOfficeReady
+  canUndoLast,
+  onUndoLast,
 }) => {
-  const versionString = 'v1.0.0 (Oct 2026)';
-
   return (
     <header
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '8px 12px',
-        borderBottom: '1px solid rgba(128, 128, 128, 0.2)',
-        background: 'var(--colorNeutralBackground1)',
-        minHeight: '44px',
-        userSelect: 'none'
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "8px 10px",
+        borderBottom: "1px solid var(--colorNeutralStroke2, #e1dfdd)",
+        background: isDark ? "#1f1f1f" : "#faf9f8",
+        gap: "6px",
+        flexShrink: 0,
       }}
     >
-      {/* Brand Title and Version */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
-        <div
-          style={{
-            width: '24px',
-            height: '24px',
-            borderRadius: '6px',
-            background: 'linear-gradient(135deg, #D24726 0%, #E8633A 100%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: '#fff',
-            fontWeight: 800,
-            fontSize: '13px',
-            boxShadow: '0 2px 4px rgba(210, 71, 38, 0.3)'
-          }}
-        >
-          Z
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--colorNeutralForeground1)' }}>
-              Zee AI
-            </span>
-            <span style={{ fontSize: '11px', color: 'var(--colorNeutralForeground3)' }}>
-              PowerPoint
-            </span>
-            {isOfficeReady ? (
-              <Badge size="small" appearance="filled" color="success">
-                PPT
-              </Badge>
-            ) : (
-              <Badge size="small" appearance="outline" color="warning">
-                Preview
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+        {/* Relative icon path so it works on both localhost and GitHub Pages */}
+        <img
+          src="assets/icon-32.png"
+          alt="Zee AI"
+          width={24}
+          height={24}
+          style={{ borderRadius: 5, flexShrink: 0 }}
+        />
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              fontWeight: 600,
+              fontSize: "13px",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            <span>Zee AI</span>
+            <Badge
+              size="small"
+              appearance="tint"
+              color={requirements.isPowerPointHost ? "brand" : "warning"}
+            >
+              {requirements.isPowerPointHost ? "PPT" : "Preview"}
+            </Badge>
+            {settings.bilingualMode && (
+              <Badge size="small" appearance="filled" color="informative">
+                EN+AR
               </Badge>
             )}
           </div>
-          <span style={{ fontSize: '9px', color: 'var(--colorNeutralForeground4)', lineHeight: 1 }}>
-            {versionString}
-          </span>
         </div>
       </div>
 
-      {/* Actions Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-        {hasMessages && (
-          <>
-            <Tooltip content="Export Chat" relationship="label">
-              <Button
-                appearance="subtle"
-                size="small"
-                icon={<ArrowDownload24Regular style={{ fontSize: '16px' }} />}
-                onClick={onExportChat}
-                aria-label="Export chat transcript"
-              />
-            </Tooltip>
-            <Tooltip content="Clear Chat" relationship="label">
-              <Button
-                appearance="subtle"
-                size="small"
-                icon={<Delete24Regular style={{ fontSize: '16px' }} />}
-                onClick={onClearChat}
-                aria-label="Clear chat history"
-              />
-            </Tooltip>
-          </>
+      <div style={{ display: "flex", alignItems: "center", gap: "2px", flexShrink: 0 }}>
+        <Tooltip
+          content="Agent Mode: AI reads and edits slides using approval cards and undo"
+          relationship="description"
+        >
+          <div style={{ display: "flex", alignItems: "center", marginRight: 2 }}>
+            <Bot20Regular
+              style={{
+                color: settings.agentMode ? "#b73618" : undefined,
+                marginRight: -4,
+              }}
+            />
+            <Switch
+              checked={settings.agentMode}
+              onChange={(_, data) => onToggleAgentMode(data.checked)}
+              label={<span className="zee-hide-narrow" style={{ fontSize: 11 }}>Agent</span>}
+            />
+          </div>
+        </Tooltip>
+
+        {canUndoLast && (
+          <Tooltip content="Undo last slide action" relationship="label">
+            <Button
+              size="small"
+              appearance="subtle"
+              onClick={onUndoLast}
+              style={{ fontSize: 11, padding: "2px 6px" }}
+            >
+              ↶ Undo
+            </Button>
+          </Tooltip>
         )}
 
-        <Tooltip content={darkMode === 'dark' ? 'Switch to Light' : 'Switch to Dark'} relationship="label">
+        <Tooltip content={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"} relationship="label">
           <Button
-            appearance="subtle"
             size="small"
-            icon={
-              darkMode === 'dark' ? (
-                <WeatherSunny24Regular style={{ fontSize: '16px', color: '#F8D247' }} />
-              ) : (
-                <WeatherMoon24Regular style={{ fontSize: '16px' }} />
-              )
-            }
-            onClick={onToggleDarkMode}
+            appearance="subtle"
+            icon={isDark ? <WeatherSunny20Regular /> : <WeatherMoon20Regular />}
+            onClick={onToggleTheme}
             aria-label="Toggle dark mode"
           />
         </Tooltip>
 
-        <Tooltip content="Settings" relationship="label">
+        <Tooltip content="Export chat transcript (.md)" relationship="label">
           <Button
-            appearance="subtle"
             size="small"
-            icon={<Settings24Regular style={{ fontSize: '17px' }} />}
+            appearance="subtle"
+            icon={<ArrowDownload20Regular />}
+            onClick={onExportChat}
+            aria-label="Export chat"
+          />
+        </Tooltip>
+
+        <Tooltip content="Clear chat history for this presentation" relationship="label">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<Delete20Regular />}
+            onClick={onClearChat}
+            aria-label="Clear chat"
+          />
+        </Tooltip>
+
+        <Tooltip content="Settings (API Key, Arabic/RTL, Protected Terms, Template)" relationship="label">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<Settings20Regular />}
             onClick={onOpenSettings}
-            aria-label="Open settings drawer"
+            aria-label="Open Settings"
           />
         </Tooltip>
       </div>
