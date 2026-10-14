@@ -88,10 +88,53 @@ export const ARABIC_FONT_PRESETS: ArabicFontPreset[] = [
   "Tajawal",
 ];
 
-export const AVAILABLE_MODELS = [
-  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Fast & Recommended)" },
-  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro (Deep Reasoning)" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+export interface GeminiModelOption {
+  id: string;
+  label: string;
+  group?: "Gemini 3 (Stable)" | "Gemini 3 (Preview)" | "Live / Custom";
+}
+
+export const AVAILABLE_MODELS: GeminiModelOption[] = [
+  {
+    id: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash (Latest Stable — Agents & Complex Workflows)",
+    group: "Gemini 3 (Stable)",
+  },
+  {
+    id: "gemini-3.1-pro-preview",
+    label: "Gemini 3.1 Pro (Preview — Deep Reasoning & Coding)",
+    group: "Gemini 3 (Preview)",
+  },
+  {
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash (Stable — Multi-Step Agentic)",
+    group: "Gemini 3 (Stable)",
+  },
+  {
+    id: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash (Stable — Balanced Multimodal)",
+    group: "Gemini 3 (Stable)",
+  },
+  {
+    id: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash (Stable — High-Throughput)",
+    group: "Gemini 3 (Stable)",
+  },
+  {
+    id: "gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash-Lite (Fastest & Ultra-Low Cost)",
+    group: "Gemini 3 (Stable)",
+  },
+  {
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite (Frontier Efficiency)",
+    group: "Gemini 3 (Stable)",
+  },
+  {
+    id: "gemini-3-flash-preview",
+    label: "Gemini 3 Flash (Preview)",
+    group: "Gemini 3 (Preview)",
+  },
 ];
 
 export const DEFAULT_SETTINGS: ZeeSettings = {
@@ -103,7 +146,7 @@ export const DEFAULT_SETTINGS: ZeeSettings = {
   oauthExpiry: 0,
   proxyUrl: "",
   proxyToken: "",
-  model: "gemini-2.5-flash",
+  model: "gemini-3.8-flash",
   temperature: 0.3,
   appearance: "auto",
   directionMode: "auto",
@@ -134,6 +177,6 @@ declare const __APP_VERSION__: string | undefined;
 declare const __BUILD_DATE__: string | undefined;
 
 export const APP_VERSION =
-  typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "1.3.0";
+  typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "1.4.0";
 export const BUILD_DATE =
   typeof __BUILD_DATE__ !== "undefined" ? __BUILD_DATE__ : "2026-10-14";

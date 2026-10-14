@@ -24,10 +24,14 @@ import {
   BUILD_DATE,
   DEFAULT_PROTECTED_TERMS,
   DirectionMode,
+  GeminiModelOption,
   ZeeSettings,
 } from "../types/settings";
 import { PowerPointApiRequirements } from "../types/ppt";
-import { startGoogleOAuthSignIn } from "../services/authService";
+import {
+  fetchLiveGeminiModels,
+  startGoogleOAuthSignIn,
+} from "../services/authService";
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -47,9 +51,25 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   onUpdateSettings,
 }) => {
   const [oauthStatus, setOauthStatus] = useState<string>("");
+  const [modelOptions, setModelOptions] =
+    useState<GeminiModelOption[]>(AVAILABLE_MODELS);
+  const [modelFetchStatus, setModelFetchStatus] = useState<string>("");
   const [customTermInput, setCustomTermInput] = useState<string>(
     settings.customProtectedTerms.join(", ")
   );
+
+  const handleRefreshModels = async () => {
+    setModelFetchStatus("Fetching live models from Google API...");
+    try {
+      const merged = await fetchLiveGeminiModels(settings);
+      setModelOptions(merged);
+      setModelFetchStatus(`✓ Loaded ${merged.length} available Gemini models.`);
+    } catch (err) {
+      setModelFetchStatus(
+        `⚠️ ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  };
 
   const handleOAuthClick = async () => {
     setOauthStatus("Opening Google Sign-In...");
@@ -205,19 +225,72 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 </div>
               )}
 
-              <div>
-                <Label size="small">Gemini Model</Label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                  }}
+                >
+                  <Label size="small">Gemini Model (Latest Gemini 3 Series)</Label>
+                  <Button
+                    size="small"
+                    appearance="subtle"
+                    onClick={handleRefreshModels}
+                    style={{ fontSize: 11, padding: "2px 6px" }}
+                  >
+                    🔄 Fetch Live API Models
+                  </Button>
+                </div>
+
                 <Select
                   size="small"
-                  value={settings.model}
+                  value={
+                    modelOptions.some((m) => m.id === settings.model)
+                      ? settings.model
+                      : modelOptions[0]?.id
+                  }
                   onChange={(_, d) => onUpdateSettings({ model: d.value })}
                 >
-                  {AVAILABLE_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
+                  {(
+                    [
+                      "Gemini 3 (Stable)",
+                      "Gemini 3 (Preview)",
+                      "Live / Custom",
+                    ] as const
+                  ).map((grp) => {
+                    const items = modelOptions.filter((m) => m.group === grp);
+                    if (items.length === 0) return null;
+                    return (
+                      <optgroup key={grp} label={grp}>
+                        {items.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
                 </Select>
+
+                <div>
+                  <Label size="small" style={{ fontSize: 11, opacity: 0.85 }}>
+                    Active / Custom Model ID (type any new Gemini 3 model endpoint):
+                  </Label>
+                  <Input
+                    size="small"
+                    style={{ width: "100%", marginTop: 2 }}
+                    placeholder="e.g. gemini-3.8-flash, gemini-3.1-pro-preview, gemini-3.7-flash"
+                    value={settings.model}
+                    onChange={(_, d) => onUpdateSettings({ model: d.value.trim() })}
+                  />
+                </div>
+
+                {modelFetchStatus && (
+                  <div style={{ fontSize: 11, opacity: 0.85 }}>{modelFetchStatus}</div>
+                )}
               </div>
             </section>
 

@@ -10,7 +10,11 @@ import {
   saveSettings,
   trimChatHistory,
 } from "../src/services/storageService";
-import { DEFAULT_SETTINGS, STORAGE_PREFIX } from "../src/types/settings";
+import {
+  AVAILABLE_MODELS,
+  DEFAULT_SETTINGS,
+  STORAGE_PREFIX,
+} from "../src/types/settings";
 import { ChatMessage } from "../src/types/chat";
 
 function setupMockLocalStorage() {
@@ -51,18 +55,21 @@ describe("storageService", () => {
     );
   });
 
-  it("saves and loads settings with company template defaults", () => {
+  it("saves and loads settings with company template defaults and upgrades legacy 2.5/2.0 models to Gemini 3", () => {
+    expect(AVAILABLE_MODELS.every((m) => m.id.startsWith("gemini-3"))).toBe(true);
     const initial = loadSettings();
-    expect(initial.model).toBe(DEFAULT_SETTINGS.model);
+    expect(initial.model).toBe("gemini-3.8-flash");
 
     saveSettings({
       ...initial,
+      model: "gemini-2.5-flash",
       geminiApiKey: "test-key-123",
       bilingualMode: true,
       arabicFont: "Sakkal Majalla",
     });
 
     const loaded = loadSettings();
+    expect(loaded.model).toBe("gemini-3.8-flash");
     expect(loaded.geminiApiKey).toBe("test-key-123");
     expect(loaded.bilingualMode).toBe(true);
     expect(loaded.arabicFont).toBe("Sakkal Majalla");

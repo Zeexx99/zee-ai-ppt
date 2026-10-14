@@ -84,9 +84,17 @@ export function loadSettings(): ZeeSettings {
       };
     }
     const parsed = JSON.parse(raw) as Partial<ZeeSettings>;
+    const savedModel = (parsed.model || "").trim();
+    const isRemovedLegacyModel =
+      !savedModel ||
+      savedModel.startsWith("gemini-1.") ||
+      savedModel.startsWith("gemini-2.0") ||
+      savedModel.startsWith("gemini-2.5");
+
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      model: isRemovedLegacyModel ? DEFAULT_SETTINGS.model : savedModel,
       customProtectedTerms: Array.isArray(parsed.customProtectedTerms)
         ? parsed.customProtectedTerms
         : DEFAULT_SETTINGS.customProtectedTerms,

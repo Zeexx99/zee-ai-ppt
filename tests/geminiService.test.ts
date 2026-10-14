@@ -41,7 +41,7 @@ describe("authService & geminiService", () => {
     expect(isAuthConfigured(apiKeySettings)).toBe(true);
     const ep1 = buildGeminiEndpoint(apiKeySettings, "streamGenerateContent", true);
     expect(ep1.url).toContain(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
     );
     expect(ep1.headers["x-goog-api-key"]).toBe("AIzaTestKey");
 
@@ -54,7 +54,7 @@ describe("authService & geminiService", () => {
     expect(isAuthConfigured(proxySettings)).toBe(true);
     const ep2 = buildGeminiEndpoint(proxySettings, "generateContent", false);
     expect(ep2.url).toBe(
-      "https://zee-proxy.workers.dev/v1beta/models/gemini-2.5-flash:generateContent"
+      "https://zee-proxy.workers.dev/v1beta/models/gemini-3.8-flash:generateContent"
     );
     expect(ep2.headers["Authorization"]).toBe("Bearer team-secret-token");
     expect(ep2.headers["X-Zee-Token"]).toBe("team-secret-token");

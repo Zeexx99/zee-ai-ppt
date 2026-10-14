@@ -1,4 +1,9 @@
-import { STORAGE_PREFIX, ZeeSettings } from "../types/settings";
+import {
+  AVAILABLE_MODELS,
+  GeminiModelOption,
+  STORAGE_PREFIX,
+  ZeeSettings,
+} from "../types/settings";
 
 export const ALLOWED_PROXY_ACTIONS = [
   "generateContent",
@@ -55,7 +60,7 @@ export function buildGeminiEndpoint(
     throw new Error(`Unsupported Gemini API action: ${action}`);
   }
 
-  const model = (settings.model || "gemini-2.5-flash").replace(/^models\//, "");
+  const model = (settings.model || "gemini-3.8-flash").replace(/^models\//, "");
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -220,3 +225,88 @@ export async function startGoogleOAuthSignIn(
     }
   });
 }
+
+export function mergeModelOptions(
+  liveModels: GeminiModelOption[] = []
+): GeminiModelOption[] {
+  const byId = new Map<string, GeminiModelOption>();
+  for (const m of AVAILABLE_MODELS) {
+    byId.set(m.id, m);
+  }
+  for (const m of liveModels) {
+    const cleanId = m.id.replace(/^models\//, "").trim();
+    if (!cleanId) continue;
+    if (!byId.has(cleanId)) {
+      byId.set(cleanId, {
+        id: cleanId,
+        label: m.label || cleanId,
+        group: m.group || "Live / Custom",
+      });
+    }
+  }
+  return Array.from(byId.values());
+}
+
+/**
+ * Queries the live Google Gemini `/v1beta/models` endpoint to discover all
+ * `generateContent`-capable models available to the user's API key / OAuth / proxy.
+ */
+export async function fetchLiveGeminiModels(
+  settings: ZeeSettings
+): Promise<GeminiModelOption[]> {
+  let url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100";
+  const headers: Record<string, string> = {};
+
+  if (settings.authMode === "proxy") {
+    const baseProxy = settings.proxyUrl.trim().replace(/\/+$/, "");
+    if (!baseProxy || !settings.proxyToken.trim()) {
+      throw new Error("Enter your Cloudflare Team Proxy URL and Token first.");
+    }
+    url = `${baseProxy}/v1beta/models?pageSize=100`;
+    headers["Authorization"] = `Bearer ${settings.proxyToken.trim()}`;
+    headers["X-Zee-Token"] = settings.proxyToken.trim();
+  } else if (settings.authMode === "oauth") {
+    if (!settings.oauthAccessToken.trim()) {
+      throw new Error("Sign in with Google first to fetch live models.");
+    }
+    headers["Authorization"] = `Bearer ${settings.oauthAccessToken.trim()}`;
+  } else {
+    if (!settings.geminiApiKey.trim()) {
+      throw new Error("Enter your Gemini API Key first to fetch live models.");
+    }
+    headers["x-goog-api-key"] = settings.geminiApiKey.trim();
+  }
+
+  const response = await fetch(url, { method: "GET", headers });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch models (HTTP ${response.status}).`);
+  }
+
+  const data = await response.json();
+  const rawModels: any[] = Array.isArray(data?.models) ? data.models : [];
+
+  const discovered: GeminiModelOption[] = rawModels
+    .filter((m) => {
+      const name = String(m?.name || "").replace(/^models\//, "");
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
+        ? m.supportedGenerationMethods
+        : [];
+      return (
+        name.startsWith("gemini-3") &&
+        methods.includes("generateContent") &&
+        !name.includes("embedding") &&
+        !name.includes("aqa")
+      );
+    })
+    .map((m) => {
+      const id = String(m.name).replace(/^models\//, "");
+      const displayName = m.displayName ? `${m.displayName} (${id})` : id;
+      const group: GeminiModelOption["group"] = id.includes("preview")
+        ? "Gemini 3 (Preview)"
+        : "Gemini 3 (Stable)";
+      return { id, label: displayName, group };
+    });
+
+  return mergeModelOptions(discovered);
+}
+
